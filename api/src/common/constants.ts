@@ -20,10 +20,16 @@ export const DEFAULT_LOG_LEVEL = 'info';
  * The path Apple fetches to prove domain control. Fixed by Apple — it is not a
  * knob. Served at the domain ROOT, so the route is excluded from the API's
  * global prefix (see main.ts).
+ *
+ * The `.txt` suffix is load-bearing and was missing here. Apple's Verify screen
+ * states the location it will fetch, and it ends in `.txt`. Measured against two
+ * domains this merchant has already verified: the `.txt` path returns 200 and the
+ * extensionless one returns 404. Probing the extensionless path meant the probe
+ * could never pass, so the flow never reached Apple's verification step at all.
  */
 export const WELL_KNOWN_PATH = '.well-known';
 export const DOMAIN_ASSOCIATION_FILENAME =
-  'apple-developer-merchantid-domain-association';
+  'apple-developer-merchantid-domain-association.txt';
 export const DOMAIN_ASSOCIATION_PATH = `/${WELL_KNOWN_PATH}/${DOMAIN_ASSOCIATION_FILENAME}`;
 
 /** Request-body ceiling. Apple Pay payloads are small; a large ceiling is only attack surface. */

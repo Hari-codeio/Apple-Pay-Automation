@@ -57,8 +57,20 @@ association file rather than accumulating history. `created_at` and
 | `status`                  | `pending` → `active` on confirmed verification, `failed` on a failed probe |
 | `last_probe_at/_ok`       | Every probe, success or failure                                            |
 | `last_verified_at`        | Only when Apple explicitly confirms                                        |
-| `verification_expires_at` | `now + VERIFICATION_TTL_DAYS`; drives the renewal sweep                    |
+| `verification_expires_at` | Apple's own `Verification Expires` date, scraped after it verifies         |
 | `is_deleted`              | Soft delete. Nothing here ever issues a `DELETE`.                          |
+
+`verification_expires_at` is Apple's value, not ours. Apple issues it only when it
+verifies a domain and shows it only in the Merchant Domains list, so the column is
+`NULL` between registration and successful verification. It is never computed:
+`VERIFICATION_TTL_DAYS` previously set it to `now + 365 days` against a real Apple
+window of roughly 90, which made every row look fresh for months after Apple had
+stopped trusting it.
+
+When the date cannot be read — Apple changed the DOM, or the copy — the run logs at
+`error` and the column is left as it was rather than being overwritten with `NULL`.
+A `NULL` here is invisible to the renewal query, which filters on `IS NOT NULL`, so
+grep the logs for `expiry` before trusting an empty column.
 
 ## Runbook
 

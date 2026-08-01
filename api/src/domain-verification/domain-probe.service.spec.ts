@@ -52,8 +52,9 @@ describe('DomainProbeService', () => {
     const outcome = await service.probe('pay.example.com', FILE_SHA);
 
     expect(outcome.ok).toBe(true);
+    // `.txt` is the path Apple actually fetches — see domain.util.spec.
     expect(outcome.url).toBe(
-      'https://pay.example.com/.well-known/apple-developer-merchantid-domain-association',
+      'https://pay.example.com/.well-known/apple-developer-merchantid-domain-association.txt',
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

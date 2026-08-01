@@ -170,6 +170,16 @@ describe('DomainVerificationRepository', () => {
       expect(params).toContain('2027-08-01 00:00:00');
     });
 
+    it('binds NULL when there is no expiry yet', async () => {
+      // Registration happens before Apple verifies, and Apple only publishes an
+      // expiry once it has. A computed placeholder here is what this replaced.
+      await repository.upsert({ ...input, verificationExpiresAt: null });
+
+      const [, params] = mysql.execute.mock.calls[0];
+      expect(params).toContain(null);
+      expect(params).not.toContain('2027-08-01 00:00:00');
+    });
+
     it('clears is_deleted so re-registering revives a soft-deleted row', async () => {
       await repository.upsert(input);
 
@@ -208,9 +218,34 @@ describe('DomainVerificationRepository', () => {
     });
   });
 
+  describe('markActive', () => {
+    it('writes the expiry Apple published, as a UTC DATETIME', async () => {
+      await repository.markActive(
+        'pay.example.com',
+        new Date('2026-10-28T00:00:00.000Z'),
+      );
+
+      const [sql, params] = mysql.execute.mock.calls[0];
+      expect(sql).toContain("status = 'active'");
+      expect(params).toEqual(['2026-10-28 00:00:00', 'pay.example.com']);
+    });
+
+    it('preserves an existing expiry when the portal date could not be read', async () => {
+      // Overwriting a real Apple date with NULL would both lose information and
+      // drop the row out of findExpiringBefore, which filters on IS NOT NULL.
+      await repository.markActive('pay.example.com', null);
+
+      const [sql, params] = mysql.execute.mock.calls[0];
+      expect(sql).toContain(
+        'verification_expires_at = COALESCE(?, verification_expires_at)',
+      );
+      expect(params).toEqual([null, 'pay.example.com']);
+    });
+  });
+
   it('issues no DELETE statement anywhere', async () => {
     await repository.softDelete('pay.example.com');
-    await repository.markActive('pay.example.com');
+    await repository.markActive('pay.example.com', null);
     await repository.markStatus('pay.example.com', 'failed');
     await repository.recordProbe('pay.example.com', true);
 

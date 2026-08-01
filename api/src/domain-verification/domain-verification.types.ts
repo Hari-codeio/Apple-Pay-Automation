@@ -43,7 +43,12 @@ export interface UpsertVerificationInput {
   verificationFile: string;
   contentSha256: string;
   status: VerificationStatus;
-  verificationExpiresAt: Date;
+  /**
+   * Null at registration time. Apple only publishes an expiry once it has
+   * verified the domain, so the real value arrives later via
+   * `markActive` — see domain-verification.service.ts.
+   */
+  verificationExpiresAt: Date | null;
 }
 
 export type ProbeFailureReason =
@@ -65,7 +70,14 @@ export interface RegistrationResult {
   /** Where the downloaded file was kept, for post-mortem inspection. */
   savedTo: string;
   probe?: ProbeOutcome;
-  /** 'skipped' when the caller asked not to trigger Apple's check. */
-  verification: 'verified' | 'unknown' | 'skipped' | 'not-attempted';
-  verificationExpiresAt: string;
+  /**
+   * 'skipped' when the caller asked not to trigger Apple's check. 'failed' means
+   * Apple explicitly rejected it and said why; 'unknown' means it gave no verdict.
+   */
+  verification: 'verified' | 'failed' | 'unknown' | 'skipped' | 'not-attempted';
+  /**
+   * Apple's published expiry, ISO-8601, or null when Apple has not verified the
+   * domain yet or published no readable date. Never a locally computed guess.
+   */
+  verificationExpiresAt: string | null;
 }

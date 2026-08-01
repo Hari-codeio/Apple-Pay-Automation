@@ -1,6 +1,9 @@
 import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { ApplePortalClient } from '../apple-portal/apple-portal.client';
+import type {
+  ApplePortalClient,
+  AssociationFile,
+} from '../apple-portal/apple-portal.client';
 import { AppLogger } from '../observability/app-logger';
 import type { DomainProbeService } from './domain-probe.service';
 import type { DomainVerificationRepository } from './domain-verification.repository';
@@ -8,11 +11,15 @@ import { DomainVerificationService } from './domain-verification.service';
 
 const SHA = 'a'.repeat(64);
 
+/** A date Apple actually published on the merchant list, `Oct 28, 2026`. */
+const APPLE_EXPIRY = new Date('2026-10-28T00:00:00.000Z');
+
 function configWith(overrides: Record<string, unknown> = {}): ConfigService {
   const values: Record<string, unknown> = {
     APPLE_MERCHANT_ID: 'merchant.phoenix.applepay8',
     APPLE_TEAM_ID: '64426BH9K3',
-    VERIFICATION_TTL_DAYS: 365,
+    // No VERIFICATION_TTL_DAYS: the expiry is read from the portal, never
+    // computed here. See merchant-domain-list.ts.
     DOMAIN_PROBE_ENABLED: true,
     ...overrides,
   };
@@ -32,20 +39,45 @@ function build(
 ) {
   const calls: string[] = [];
 
-  const portal = {
-    registerDomain: jest.fn(async () => {
+  const registerDomain =
+    overrides.portal?.registerDomain ??
+    jest.fn(async () => {
       calls.push('portal.registerDomain');
       return {
-        suggestedFilename: 'apple-developer-merchantid-domain-association',
+        suggestedFilename: 'apple-developer-merchantid-domain-association.txt',
         content: 'x'.repeat(200),
         contentSha256: SHA,
         savedTo: '/tmp/file',
       };
-    }),
-    verifyDomain: jest.fn(async () => {
+    });
+
+  const verifyDomain =
+    overrides.portal?.verifyDomain ??
+    jest.fn(async () => {
       calls.push('portal.verifyDomain');
-      return { outcome: 'verified' as const };
-    }),
+      return {
+        outcome: 'verified' as const,
+        verificationExpiresAt: APPLE_EXPIRY,
+      };
+    });
+
+  const portal = {
+    registerDomain,
+    verifyDomain,
+    // Mirrors the real client: one session doing download → persist → Verify.
+    // Delegating to the two mocks above keeps `overrides.portal.verifyDomain`
+    // meaningful, and deliberately records nothing of its own in `calls` so the
+    // observable sequence stays what it was before the flow became one session.
+    registerAndVerify: jest.fn(
+      async (
+        domain: string,
+        persist: (file: AssociationFile) => Promise<void>,
+      ) => {
+        const file = await registerDomain(domain);
+        await persist(file);
+        return { file, verification: await verifyDomain(domain) };
+      },
+    ),
     ...overrides.portal,
   };
 
@@ -133,6 +165,86 @@ describe('DomainVerificationService.register', () => {
         contentSha256: SHA,
       }),
     );
+  });
+
+  describe('verification expiry', () => {
+    it('persists no expiry at registration time', async () => {
+      // Apple issues an expiry only when it verifies, and publishes it only on
+      // the merchant list. This once wrote `now + 365 days`, which was ~4x the
+      // real ~90-day window, so every row looked fresh long after Apple had
+      // stopped trusting it.
+      const { service, repository } = build();
+
+      await service.register({ domain: 'pay.example.com' });
+
+      expect(repository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ verificationExpiresAt: null }),
+      );
+    });
+
+    it("records the portal's own date once Apple has verified", async () => {
+      const { service, repository } = build();
+
+      const result = await service.register({ domain: 'pay.example.com' });
+
+      expect(repository.markActive).toHaveBeenCalledWith(
+        'pay.example.com',
+        APPLE_EXPIRY,
+      );
+      expect(result.verificationExpiresAt).toBe('2026-10-28T00:00:00.000Z');
+    });
+
+    it('reports a null expiry rather than inventing one when the portal date is unreadable', async () => {
+      const { service, repository } = build({
+        portal: {
+          verifyDomain: jest.fn(async () => ({
+            outcome: 'verified' as const,
+            verificationExpiresAt: null,
+          })),
+        },
+      });
+
+      const result = await service.register({ domain: 'pay.example.com' });
+
+      // Still verified and active — the domain does work; only the date is
+      // unknown, and the repository preserves any prior value.
+      expect(result.status).toBe('active');
+      expect(result.verification).toBe('verified');
+      expect(result.verificationExpiresAt).toBeNull();
+      expect(repository.markActive).toHaveBeenCalledWith(
+        'pay.example.com',
+        null,
+      );
+    });
+
+    it('leaves the expiry null when Apple gives no verdict', async () => {
+      const { service, repository } = build({
+        portal: {
+          verifyDomain: jest.fn(async () => ({
+            outcome: 'unknown' as const,
+            verificationExpiresAt: null,
+          })),
+        },
+      });
+
+      const result = await service.register({ domain: 'pay.example.com' });
+
+      expect(result.status).toBe('pending');
+      expect(result.verificationExpiresAt).toBeNull();
+      expect(repository.markActive).not.toHaveBeenCalled();
+    });
+
+    it('reports no expiry when verification was skipped', async () => {
+      const { service } = build();
+
+      const result = await service.register({
+        domain: 'pay.example.com',
+        skipVerify: true,
+      });
+
+      expect(result.verification).toBe('skipped');
+      expect(result.verificationExpiresAt).toBeNull();
+    });
   });
 
   it('stores a null store_code when none is supplied', async () => {

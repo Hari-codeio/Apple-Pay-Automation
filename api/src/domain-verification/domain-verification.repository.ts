@@ -97,7 +97,10 @@ export class DomainVerificationRepository {
    * MySQL deprecated in 8.0.20.
    */
   async upsert(input: UpsertVerificationInput): Promise<void> {
-    const expiresAt = toMysqlUtc(input.verificationExpiresAt);
+    const expiresAt =
+      input.verificationExpiresAt === null
+        ? null
+        : toMysqlUtc(input.verificationExpiresAt);
     await this.mysql.execute(
       `INSERT INTO ${TABLE}
          (id, domain, store_code, merchant_id, verification_file, created_at,
@@ -148,13 +151,31 @@ export class DomainVerificationRepository {
     );
   }
 
-  async markActive(domain: string): Promise<void> {
+  /**
+   * Mark verified, recording Apple's own expiry when one could be read.
+   *
+   * `COALESCE(?, verification_expires_at)` rather than a plain assignment: a null
+   * means the scrape failed, and overwriting a previously-good Apple date with
+   * NULL would both discard real information and drop the row out of
+   * `findExpiringBefore`, which filters on `IS NOT NULL`. A stale real date stays
+   * visible and fixable; a NULL is invisible.
+   */
+  async markActive(
+    domain: string,
+    verificationExpiresAt: Date | null,
+  ): Promise<void> {
     await this.mysql.execute(
       `UPDATE ${TABLE}
           SET status = 'active', last_verified_at = UTC_TIMESTAMP(),
+              verification_expires_at = COALESCE(?, verification_expires_at),
               updated_at = UTC_TIMESTAMP()
         WHERE domain = ?`,
-      [domain],
+      [
+        verificationExpiresAt === null
+          ? null
+          : toMysqlUtc(verificationExpiresAt),
+        domain,
+      ],
     );
   }
 

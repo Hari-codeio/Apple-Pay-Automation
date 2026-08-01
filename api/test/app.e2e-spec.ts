@@ -339,6 +339,31 @@ describe('API surface (e2e)', () => {
       expect(response.headers['cache-control']).toBe('no-store');
     });
 
+    it('serves the path Apple actually fetches, which ends in .txt', async () => {
+      // Measured against domains this merchant has verified: the `.txt` path
+      // returns the file and the extensionless one 404s. Asserted literally
+      // rather than through the constant, so a regression in the constant fails
+      // here instead of silently agreeing with itself.
+      expect(DOMAIN_ASSOCIATION_PATH).toBe(
+        '/.well-known/apple-developer-merchantid-domain-association.txt',
+      );
+    });
+
+    it('does not answer the older extensionless path', async () => {
+      // One path only. Serving the pre-.txt name too would mean keeping it in
+      // the global-prefix exclude list as well, and Apple never fetches it.
+      repository.findServable.mockResolvedValue({
+        domain: '127.0.0.1',
+        verificationFile: 'association-file-contents',
+        status: 'active',
+        isDeleted: false,
+      });
+
+      await request(app.getHttpServer())
+        .get('/.well-known/apple-developer-merchantid-domain-association')
+        .expect(404);
+    });
+
     it('404s when no record is registered for the host', async () => {
       repository.findServable.mockResolvedValue(undefined);
 

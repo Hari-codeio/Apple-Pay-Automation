@@ -283,8 +283,14 @@ export const configValidationSchema = z
     // table. Off by default: in the Phoenix deployment the CRM backend already
     // owns that route, and two services answering it is a split brain.
     WELL_KNOWN_SERVE_ENABLED: optionalBoolean,
-    // Policy knob, not an Apple-published value: how long a row is considered
-    // fresh before the renewal sweep re-verifies it.
+    // CURRENTLY UNUSED. This once computed verification_expires_at as
+    // `now + 365 days`, an invented value: Apple's real window is ~90 days, so
+    // every row claimed nine months more runway than it had. The expiry is now
+    // read from the portal instead (see merchant-domain-list.ts).
+    //
+    // Kept defined so existing deployments that set it still validate, and
+    // because the pending renewal-cron work is the natural place to either give
+    // it a real job or retire it.
     VERIFICATION_TTL_DAYS: z.coerce
       .number()
       .int()

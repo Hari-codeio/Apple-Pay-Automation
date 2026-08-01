@@ -1,0 +1,88 @@
+{
+  "name": "@apple-pay/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Apple Pay merchant domain verification automation — NestJS deployable.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "nest build",
+    "build:watch": "nest build --watch",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
+    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand --forceExit",
+    "apple:chrome": "ts-node src/bin/apple-chrome.ts",
+    "apple:login": "ts-node src/bin/apple-login.ts",
+    "apple:verify": "ts-node src/bin/verify-domain.ts",
+    "playwright:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "@apple-pay/config-validation": "workspace:*",
+    "@nestjs/common": "^11.1.12",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.1.12",
+    "@nestjs/platform-express": "^11.1.12",
+    "@nestjs/schedule": "^6.0.0",
+    "@nestjs/swagger": "^11.2.5",
+    "@nestjs/throttler": "^6.5.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "cron": "4.4.0",
+    "express": "5.2.1",
+    "helmet": "^8.0.0",
+    "mysql2": "^3.11.0",
+    "pino": "^9.6.0",
+    "playwright": "1.62.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@apple-pay/eslint-config": "workspace:*",
+    "@nestjs/cli": "^11.0.16",
+    "@nestjs/schematics": "^11.0.9",
+    "@nestjs/testing": "^11.1.12",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.5",
+    "@types/supertest": "^6.0.2",
+    "eslint": "^9.18.0",
+    "jest": "^29.7.0",
+    "pino-pretty": "^13.0.0",
+    "prettier": "^3.4.2",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s",
+      "!**/*.spec.ts",
+      "!**/main.ts",
+      "!**/bin/**"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^src/(.*)$": "<rootDir>/$1",
+      "^@apple-pay/(.+)$": "<rootDir>/../../packages/$1/src/index.ts"
+    }
+  }
+}

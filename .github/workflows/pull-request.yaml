@@ -1,0 +1,145 @@
+name: Pull Request
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# A force-push supersedes the previous run; finishing it wastes a runner and
+# reports a verdict on code that no longer exists.
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      config_validation: ${{ steps.filter.outputs.config_validation }}
+      workspace: ${{ steps.filter.outputs.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'api/**'
+            config_validation:
+              - 'packages/config-validation/**'
+            workspace:
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'package.json'
+              - '.npmrc'
+              - 'tsconfig.base.json'
+              - 'packages/**'
+
+  lint-test:
+    name: Lint & Test (${{ matrix.service }})
+    needs: changes
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            path: api
+            filter_name: '@apple-pay/api'
+            changed: ${{ needs.changes.outputs.api == 'true' || needs.changes.outputs.workspace == 'true' }}
+          # The api job builds this package but runs none of its own tests, so a
+          # regression in the shared boot gate would otherwise merge green.
+          - service: config-validation
+            path: packages/config-validation
+            filter_name: '@apple-pay/config-validation'
+            changed: ${{ needs.changes.outputs.config_validation == 'true' || needs.changes.outputs.workspace == 'true' }}
+    steps:
+      - name: Skip if unaffected
+        if: matrix.changed == false
+        run: echo "No changes affecting ${{ matrix.service }}"
+
+      - uses: actions/checkout@v4
+        if: matrix.changed == true
+
+      - uses: pnpm/action-setup@v4
+        if: matrix.changed == true
+        with:
+          # Version comes from `packageManager` in package.json. Passing `version`
+          # here as well makes the action hard-error on the ambiguity.
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        if: matrix.changed == true
+        with:
+          node-version: 22
+          # Reads pnpm-lock.yaml for the cache key. Set up AFTER pnpm/action-setup
+          # so the pnpm binary exists when this step resolves the store path.
+          cache: pnpm
+
+      - name: Install dependencies
+        if: matrix.changed == true
+        # Browsers are not downloaded: nothing in CI drives a real browser, and
+        # pulling ~200MB per job to run unit tests is pure latency.
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: pnpm install --frozen-lockfile --filter=${{ matrix.filter_name }}...
+
+      - name: Build
+        if: matrix.changed == true
+        run: pnpm --filter=${{ matrix.filter_name }}... build
+
+      - name: Lint
+        if: matrix.changed == true
+        working-directory: ${{ matrix.path }}
+        run: pnpm lint
+
+      - name: Test
+        if: matrix.changed == true
+        working-directory: ${{ matrix.path }}
+        run: pnpm test
+
+      - name: E2E
+        if: matrix.changed == true && matrix.service == 'api'
+        working-directory: ${{ matrix.path }}
+        run: pnpm test:e2e
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          # See the lint-test job: version is pinned by `packageManager`.
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # Root-only: Prettier and its config are the sole dependencies needed.
+      - run: pnpm install --frozen-lockfile --ignore-scripts --filter=apple-pay-automation
+      - run: pnpm format:check
+
+  required-check:
+    name: All Checks Passed
+    runs-on: ubuntu-latest
+    needs: [changes, lint-test, format]
+    # `always()` so this job still reports when an upstream job is skipped;
+    # without it a skipped matrix would leave the required check pending forever.
+    if: always()
+    steps:
+      - name: Verify upstream results
+        run: |
+          if [[ "${{ needs.lint-test.result }}" == "failure" || "${{ needs.format.result }}" == "failure" ]]; then
+            echo "Lint, tests, or formatting failed"
+            exit 1
+          fi
+          if [[ "${{ needs.lint-test.result }}" == "cancelled" || "${{ needs.format.result }}" == "cancelled" ]]; then
+            echo "A required job was cancelled"
+            exit 1
+          fi
+          echo "All checks passed"

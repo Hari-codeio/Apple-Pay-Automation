@@ -1,0 +1,17 @@
+**/node_modules
+**/dist
+**/coverage
+**/.turbo
+.git
+.github
+.husky
+.claude
+**/*.log
+**/.env
+**/.env.*
+!**/.env.example
+**/certs
+**/*.p12
+**/*.pem
+**/*.key
+README.md

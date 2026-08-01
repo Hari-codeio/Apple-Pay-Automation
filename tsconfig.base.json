@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "declaration": true,
+    // declarationMap requires declaration: a project that overrides
+    // "declaration": false must pair it with "declarationMap": false or tsc
+    // fails with TS5069.
+    "declarationMap": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "skipLibCheck": true
+  }
+}

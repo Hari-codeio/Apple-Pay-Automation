@@ -1,0 +1,20 @@
+# Normalize line endings: LF in the repository, native on checkout. Without
+# this, commits from Windows machines land with CRLF and every diff on a Linux
+# CI runner shows the whole file as changed.
+* text=auto eol=lf
+
+# Shell scripts and git hooks must stay LF even on Windows checkouts — CRLF
+# breaks the shebang line under sh.
+*.sh text eol=lf
+.husky/* text eol=lf
+
+# Generated: collapse in diffs and exclude from language statistics.
+pnpm-lock.yaml linguist-generated=true -diff
+
+# Binary assets (Apple Pay certificates and archives) must never be
+# line-ending converted.
+*.p12 binary
+*.cer binary
+*.png binary
+*.jpg binary
+*.ico binary

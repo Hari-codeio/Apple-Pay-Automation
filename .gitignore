@@ -1,24 +1,80 @@
-# Nestjs specific
-/dist
-/node_modules
-/build
-/tmp
+# Dependencies
+node_modules/
+
+# pnpm
+.pnpm-store/
+.pnpm-debug.log
+
+# npm / yarn (this repo is pnpm-only)
+package-lock.json
+yarn.lock
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
 
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-lerna-debug.log*
 
-# dotenv environment variable files
+# Environment variables — only .env.example is tracked. Never commit a file
+# holding real credentials (Apple Pay merchant keys, gateway secrets).
 .env
+.env.local
+.env.*.local
 .env.development
 .env.test
 .env.production
+.env.bak
+.env.*.bak
 
-# temp directory
+# Playwright storage state. This file is a bearer credential for the whole Apple
+# Developer account — every unattended run authenticates with it because Apple ID
+# sign-in is 2FA-gated. Never commit it.
+.playwright/
+
+# Downloaded association files and Playwright traces. Traces contain full page
+# snapshots of an authenticated portal session.
+.artifacts/
+
+# Certificates / private keys (Apple Pay merchant identity + payment
+# processing certs land here during local development).
+*.p12
+*.pem
+*.key
+*.cer
+*.mobileprovision
+certs/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temp
 .temp
 .tmp
+/tmp
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code workspace: team-shared config under .claude/ is tracked on
+# purpose; personal / secret-bearing files are not.
+.claude/settings.local.json
+.claude/worktrees/
+
+# Squad-up artifacts written to the repo root by the squad pipeline.
+/SQUAD_PLAN*.md
+/SQUAD_DELIVERY*.md

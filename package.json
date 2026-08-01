@@ -1,0 +1,36 @@
+{
+  "name": "apple-pay-automation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Apple Pay verification automation — pnpm workspace of NestJS deployables and shared packages.",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "test:e2e": "pnpm --filter=@apple-pay/api test:e2e",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "start:dev": "pnpm --filter=@apple-pay/api start:dev",
+    "start:prod": "pnpm --filter=@apple-pay/api start:prod",
+    "apple:chrome": "pnpm --filter=@apple-pay/api apple:chrome",
+    "apple:login": "pnpm --filter=@apple-pay/api apple:login",
+    "apple:verify": "pnpm --filter=@apple-pay/api apple:verify",
+    "playwright:install": "pnpm --filter=@apple-pay/api playwright:install",
+    "prepare": "node -e \"import('husky').then(h => h.default()).catch(() => {})\""
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.4.2"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.29.3",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "playwright"
+    ]
+  }
+}

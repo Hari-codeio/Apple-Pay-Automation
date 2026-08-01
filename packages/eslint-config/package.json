@@ -1,0 +1,23 @@
+{
+  "name": "@apple-pay/eslint-config",
+  "version": "1.0.0",
+  "description": "Shared flat ESLint config (ESLint 9) for Apple Pay Automation workspace packages",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs"
+  ],
+  "dependencies": {
+    "eslint-config-prettier": "^10.0.1",
+    "eslint-plugin-prettier": "^5.2.2",
+    "globals": "^16.0.0",
+    "typescript-eslint": "^8.20.0"
+  },
+  "peerDependencies": {
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0"
+  }
+}

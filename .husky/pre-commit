@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+# Lint + auto-fix staged files before every commit.
+#
+# lint-staged runs each staged *.ts through its own package's ESLint (--fix) and
+# re-stages the fixes; see lint-staged.config.mjs. A non-fixable lint error fails
+# the commit. Requires `pnpm install` to have run (installs lint-staged + husky).
+#
+# Emergency bypass (discouraged): git commit --no-verify
+
+if command -v pnpm >/dev/null 2>&1; then
+  pnpm exec lint-staged || exit 1
+else
+  echo "[lint-staged] ERROR: pnpm not found on PATH — run 'pnpm install' first." >&2
+  exit 1
+fi

@@ -82,6 +82,71 @@ export const MERCHANT_FALLBACK_SELECTORS = {
 } as const;
 
 /**
+ * The "Merchant Domains" list, which is where Apple publishes each domain's
+ * status and its real `Verification Expires` date — available nowhere else, and
+ * only for domains Apple has already verified.
+ *
+ * `block` matches one element per registered domain. See merchant-domain-list.ts
+ * for the row structure and why the parser keys on label text rather than
+ * nth-child positions.
+ */
+export const MERCHANT_DOMAIN_LIST_SELECTORS = {
+  block: '#form-merchantId .cert-block-container .cert-block.domain-block',
+  /** Label/value rows within one block. */
+  row: 'ul > li',
+  /**
+   * This row's own Verify button, resolved RELATIVE to a block. Every row has
+   * one, so an unscoped match would fire Apple's rate-limited check at whichever
+   * domain happens to be first on the page.
+   */
+  verifyButton: '.actions-container button.action-verify',
+} as const;
+
+/**
+ * Structural path to the same blocks, from the project brief. Second opinion for
+ * when Apple drops or renames the `domain-block` class; breaks instead the moment
+ * a wrapper is inserted, hence both.
+ */
+export const MERCHANT_DOMAIN_LIST_STRUCTURAL_SELECTORS = {
+  block:
+    '#form-merchantId > div > div:nth-child(3) > div.apple-pay-on-the-web > div.cert-block-container > div:nth-child(2) > div.cert-block.domain-block',
+} as const;
+
+/**
+ * The React modal the portal raises to report the outcome of an action — the
+ * failure path of Verify among them:
+ *
+ *   "Domain verification failed. Unable to access verification file on server…"
+ *
+ * Captured from the live dialog. Note `role="dialog"`, NOT `role="alert"`: the
+ * generic error-banner selectors below do not match it, which is why a failed
+ * verification previously read as "no explicit verdict" instead of an error.
+ *
+ * The container class is generic (`info-modal`), so presence alone says nothing
+ * about severity — the message text and the icon colour do. Read, do not assume.
+ */
+export const PORTAL_MODAL_SELECTORS = {
+  container: '.ReactModal__Content[role="dialog"]',
+  /** The message sits in a `<p>` beside the severity icon. */
+  message: '.ReactModal__Content[role="dialog"] p',
+  /** Stable id, unlike the styling classes around it. */
+  dismiss: '#action-ok',
+  /** Apple colours the icon by severity; yellow is the warning/failure case. */
+  warningIcon: '.ReactModal__Content[role="dialog"] .tb-clr--icon-yellow',
+} as const;
+
+/**
+ * Wording Apple uses when Verify fails. Matched case-insensitively against the
+ * modal text, so a copy tweak degrades to "unknown verdict" rather than a false
+ * "verified" — never the other way around.
+ */
+export const VERIFICATION_FAILURE_MARKERS: readonly RegExp[] = [
+  /verification failed/i,
+  /unable to access verification file/i,
+  /could not (?:be )?verif/i,
+];
+
+/**
  * Signals that the persisted session is no longer authenticated. Apple bounces
  * an expired session to a sign-in page rather than returning 401, so the only
  * way to detect it is to look at where we landed.

@@ -62,9 +62,13 @@ describe('normalizeDomain', () => {
 });
 
 describe('associationFileUrl', () => {
-  it('builds the HTTPS URL Apple fetches', () => {
+  it('builds the HTTPS URL Apple fetches, including the .txt suffix', () => {
+    // The suffix is not cosmetic. Apple's Verify screen states the location it
+    // will fetch and it ends in `.txt`; on domains this merchant has already
+    // verified, the extensionless path 404s while the `.txt` one returns the
+    // file. Probing without it meant the probe could never pass.
     expect(associationFileUrl('pay.example.com', DOMAIN_ASSOCIATION_PATH)).toBe(
-      'https://pay.example.com/.well-known/apple-developer-merchantid-domain-association',
+      'https://pay.example.com/.well-known/apple-developer-merchantid-domain-association.txt',
     );
   });
 });

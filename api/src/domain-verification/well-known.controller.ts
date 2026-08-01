@@ -20,9 +20,12 @@ import { DomainVerificationService } from './domain-verification.service';
  *
  * Three things are load-bearing here:
  *
- *   1. **Path.** Apple fetches `/.well-known/apple-developer-merchantid-domain-association`
- *      at the domain root, so this controller is excluded from the API's global
- *      prefix in `main.ts`. Under `/api` Apple would never find it.
+ *   1. **Path.** Apple fetches
+ *      `/.well-known/apple-developer-merchantid-domain-association.txt` at the
+ *      domain root, so this controller is excluded from the API's global prefix
+ *      in `main.ts`. Under `/api` Apple would never find it. The `.txt` suffix
+ *      is the one Apple states on its Verify screen and the only one it fetches;
+ *      the extensionless name it used previously is deliberately NOT served.
  *   2. **Which file.** The domain is taken from the `Host` header, because one
  *      deployment serves many registered domains and each has its own file.
  *   3. **Bytes.** Served as `text/plain` with no transformation. Apple compares

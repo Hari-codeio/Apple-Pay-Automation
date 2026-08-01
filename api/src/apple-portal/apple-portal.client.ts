@@ -12,11 +12,21 @@ import {
   PortalRejectedError,
 } from './apple-portal.errors';
 import {
+  MERCHANT_DOMAIN_LIST_SELECTORS,
+  MERCHANT_DOMAIN_LIST_STRUCTURAL_SELECTORS,
   MERCHANT_FALLBACK_SELECTORS,
   MERCHANT_FORM_SELECTOR,
   MERCHANT_SELECTORS,
+  PORTAL_MODAL_SELECTORS,
   SIGN_IN_URL_MARKERS,
+  VERIFICATION_FAILURE_MARKERS,
 } from './selectors';
+import {
+  isVerifiedStatus,
+  parseAppleExpiryDate,
+  toDomainRow,
+  type MerchantDomainRow,
+} from './merchant-domain-list';
 
 /** The association file Apple expects to be served from the domain's root. */
 export interface AssociationFile {
@@ -29,12 +39,32 @@ export interface AssociationFile {
   savedTo: string;
 }
 
-export type VerifyOutcome = 'verified' | 'unknown';
+/**
+ * `failed` is distinct from `unknown` on purpose. `unknown` means Apple gave no
+ * verdict and someone has to look; `failed` means Apple explicitly said no, in a
+ * modal we read. Collapsing the two would send an operator hunting for a fault
+ * the portal already named.
+ */
+export type VerifyOutcome = 'verified' | 'failed' | 'unknown';
 
 export interface VerifyResult {
   outcome: VerifyOutcome;
   /** Any message the portal surfaced, for the audit trail. */
   portalMessage?: string;
+  /**
+   * Apple's own `Verification Expires` date for this domain, read from the
+   * merchant list after verification.
+   *
+   * Null when the portal published no date, or published one this code could not
+   * parse. Never a computed guess — see merchant-domain-list.ts.
+   */
+  verificationExpiresAt: Date | null;
+}
+
+/** Everything one register-then-verify session produced. */
+export interface RegisterAndVerifyResult {
+  file: AssociationFile;
+  verification: VerifyResult;
 }
 
 /**
@@ -86,42 +116,231 @@ export class ApplePortalClient {
    * not fail on "domain already exists".
    */
   async registerDomain(domain: string): Promise<AssociationFile> {
-    return this.withMerchantPage(`register-${domain}`, async (page) => {
-      // The association file is downloadable ONLY on the confirmation screen that
-      // Save renders — never from the domain list (see selectors.ts). So an
-      // already-registered domain cannot yield the file, and pretending otherwise
-      // is what previously sent this code hunting for a control that was not on
-      // the page. Say so instead.
-      if (await this.isDomainListed(page, domain)) {
-        throw new PortalRejectedError(
-          'add-domain',
-          `'${domain}' is already registered on this merchant identifier. Apple only offers ` +
-            `the association file on the confirmation screen shown right after a domain is ` +
-            `added, so it cannot be re-downloaded for an existing registration. Either use ` +
-            `the file already stored for this domain (POST /domain-verifications/${domain}/reverify), ` +
-            `or Remove the domain in the portal and register it again.`,
-        );
+    return this.withMerchantPage(`register-${domain}`, (page) =>
+      this.addDomainAndDownload(page, domain),
+    );
+  }
+
+  /**
+   * The whole flow in ONE browser session: Add Domain → Save → Download →
+   * `persist` → Verify → read Apple's expiry.
+   *
+   * It has to be one session. The Verify control that belongs to this
+   * registration lives on the confirmation screen Save renders, alongside the
+   * Download link — close the browser after downloading and it is gone, leaving
+   * only the per-row Verify buttons on the merchant list, where picking the right
+   * one among ~46 rows is a guess this code should not have to make.
+   *
+   * `persist` runs after the download and BEFORE Verify, and that ordering is the
+   * point: clicking Verify makes Apple fetch the file from the domain, and in this
+   * deployment the stored row is what makes it servable. Verifying first would ask
+   * Apple to fetch something that does not exist yet.
+   */
+  async registerAndVerify(
+    domain: string,
+    persist: (file: AssociationFile) => Promise<void>,
+  ): Promise<RegisterAndVerifyResult> {
+    return this.withMerchantPage(`register-verify-${domain}`, async (page) => {
+      const file = await this.addDomainAndDownload(page, domain);
+      await persist(file);
+      const verification = await this.clickVerifyAndRead(page, domain, {
+        scopeToDomainRow: false,
+      });
+      return { file, verification };
+    });
+  }
+
+  /** Add Domain → Save → wait for the confirmation screen → download the file. */
+  private async addDomainAndDownload(
+    page: Page,
+    domain: string,
+  ): Promise<AssociationFile> {
+    // The association file is downloadable ONLY on the confirmation screen that
+    // Save renders — never from the domain list (see selectors.ts). So an
+    // already-registered domain cannot yield the file, and pretending otherwise
+    // is what previously sent this code hunting for a control that was not on
+    // the page. Say so instead.
+    if (await this.isDomainListed(page, domain)) {
+      throw new PortalRejectedError(
+        'add-domain',
+        `'${domain}' is already registered on this merchant identifier. Apple only offers ` +
+          `the association file on the confirmation screen shown right after a domain is ` +
+          `added, so it cannot be re-downloaded for an existing registration. Either use ` +
+          `the file already stored for this domain (POST /domain-verifications/${domain}/reverify), ` +
+          `or Remove the domain in the portal and register it again.`,
+      );
+    }
+
+    await this.click(page, 'add-domain', MERCHANT_SELECTORS.addDomain, {
+      fallback: MERCHANT_FALLBACK_SELECTORS.addDomain,
+    });
+
+    const input = await this.locate(page, 'domain-input', {
+      structural: MERCHANT_SELECTORS.domainInput,
+      fallback: MERCHANT_FALLBACK_SELECTORS.domainInput,
+    });
+    await input.fill(domain);
+
+    await this.click(page, 'save-domain', MERCHANT_SELECTORS.save, {
+      fallback: MERCHANT_FALLBACK_SELECTORS.save,
+    });
+    await this.assertNoPortalError(page, 'save-domain');
+
+    // Wait for the confirmation screen before looking for its Download control.
+    // Without this the lookup runs against the pre-Save DOM, finds nothing, and
+    // falls through to a fallback selector — which is exactly how a hidden
+    // global-nav link got clicked for 20 seconds.
+    await page
+      .locator(MERCHANT_SELECTORS.download)
+      .first()
+      .waitFor({
+        state: 'visible',
+        timeout: this.config.getOrThrow<number>('PLAYWRIGHT_ACTION_TIMEOUT_MS'),
+      });
+
+    return this.downloadAssociationFile(page, domain);
+  }
+
+  /**
+   * Ask Apple to fetch the association file from the domain and mark it
+   * verified. The file must already be live — call this only after the probe
+   * confirms it.
+   */
+  async verifyDomain(domain: string): Promise<VerifyResult> {
+    return this.withMerchantPage(`verify-${domain}`, (page) =>
+      // From the list, the Verify button must be the one inside THIS domain's
+      // row — see clickVerifyAndRead.
+      this.clickVerifyAndRead(page, domain, { scopeToDomainRow: true }),
+    );
+  }
+
+  /**
+   * Click Verify, then work out what Apple said.
+   *
+   * Two shapes of answer, and the wait races them:
+   *   - a modal (`role="dialog"`) carrying an explicit failure message, or
+   *   - a return to the merchant list, where the row now reads `verified` and
+   *     carries the `Verification Expires` date.
+   *
+   * `scopeToDomainRow` distinguishes the two entry points, and they differ by one
+   * hop. After Save the browser is already ON the domain's Verify screen, so the
+   * single Verify button there is the one to press. From the merchant list it
+   * takes two clicks: the row's Verify only OPENS that domain's Verify screen —
+   * it does not run the check. Pressing it and then looking for a verdict is a
+   * 50-second wait for a result that never arrives, which is exactly what the
+   * first live run did (`listedDomains: 0`, because the list is no longer on
+   * screen). Scoping that first click to the matching block is still mandatory:
+   * every row has one, and the wrong one aims Apple's rate-limited check at an
+   * unrelated domain.
+   */
+  private async clickVerifyAndRead(
+    page: Page,
+    domain: string,
+    options: { scopeToDomainRow: boolean },
+  ): Promise<VerifyResult> {
+    const target = domain.toLowerCase();
+
+    if (options.scopeToDomainRow) {
+      const block = await this.findDomainBlock(page, target);
+      if (block === undefined) {
+        throw new PortalElementNotFoundError('verify-domain', [
+          `${MERCHANT_DOMAIN_LIST_SELECTORS.block} matching '${domain}'`,
+        ]);
       }
+      await block.locator(MERCHANT_DOMAIN_LIST_SELECTORS.verifyButton).click();
+      await this.waitForVerifyScreen(page, domain);
+    }
 
-      await this.click(page, 'add-domain', MERCHANT_SELECTORS.addDomain, {
-        fallback: MERCHANT_FALLBACK_SELECTORS.addDomain,
+    // Both paths converge here, on the domain's own Verify screen.
+    await this.click(page, 'verify-domain', MERCHANT_SELECTORS.verify, {
+      fallback: MERCHANT_FALLBACK_SELECTORS.verify,
+    });
+
+    await this.assertNoPortalError(page, 'verify-domain');
+
+    const timeout = this.config.getOrThrow<number>('PLAYWRIGHT_NAV_TIMEOUT_MS');
+    const modal = page.locator(PORTAL_MODAL_SELECTORS.container).first();
+    const listed = page.locator(MERCHANT_DOMAIN_LIST_SELECTORS.block).first();
+
+    // Whichever lands first ends the wait. Both are allowed to time out: the
+    // fall-through below reports 'unknown', which is the honest answer when the
+    // portal showed neither outcome.
+    await Promise.race([
+      modal.waitFor({ state: 'visible', timeout }).catch(() => undefined),
+      listed.waitFor({ state: 'visible', timeout }).catch(() => undefined),
+    ]);
+
+    const failure = await this.readFailureModal(page);
+    if (failure !== undefined) {
+      this.logger.emit('error', 'Apple rejected the domain verification', {
+        domain,
+        portalMessage: failure,
       });
+      await this.dismissModal(page);
+      return {
+        outcome: 'failed',
+        portalMessage: failure,
+        verificationExpiresAt: null,
+      };
+    }
 
-      const input = await this.locate(page, 'domain-input', {
-        structural: MERCHANT_SELECTORS.domainInput,
-        fallback: MERCHANT_FALLBACK_SELECTORS.domainInput,
-      });
-      await input.fill(domain);
+    await page
+      .waitForLoadState('networkidle', { timeout })
+      .catch(() => undefined);
 
-      await this.click(page, 'save-domain', MERCHANT_SELECTORS.save, {
-        fallback: MERCHANT_FALLBACK_SELECTORS.save,
-      });
-      await this.assertNoPortalError(page, 'save-domain');
+    const rows = await this.readDomainRows(page);
+    const row = rows.find((candidate) => candidate.domain === target);
 
-      // Wait for the confirmation screen before looking for its Download control.
-      // Without this the lookup runs against the pre-Save DOM, finds nothing, and
-      // falls through to a fallback selector — which is exactly how a hidden
-      // global-nav link got clicked for 20 seconds.
+    if (row !== undefined) {
+      if (!isVerifiedStatus(row.status)) {
+        this.logger.emit('warn', 'Portal lists domain as not verified', {
+          domain,
+          status: row.status,
+        });
+        return { outcome: 'unknown', verificationExpiresAt: null };
+      }
+      return {
+        outcome: 'verified',
+        verificationExpiresAt: this.readExpiry(domain, row),
+      };
+    }
+
+    // The list did not parse at all — Apple changed the DOM. Fall back to the
+    // looser whole-section match so a selector drift downgrades the expiry date
+    // rather than silently reporting an actually-verified domain as unknown.
+    if (rows.length === 0) {
+      const verifiedMarker = page
+        .locator('section')
+        .filter({ hasText: domain })
+        .filter({ hasText: /verified/i });
+
+      if ((await verifiedMarker.count()) > 0) {
+        this.logger.emit(
+          'error',
+          'Merchant domain list did not parse; verified via fallback marker and expiry is unavailable',
+          { domain, blockSelector: MERCHANT_DOMAIN_LIST_SELECTORS.block },
+        );
+        return { outcome: 'verified', verificationExpiresAt: null };
+      }
+    }
+
+    this.logger.emit(
+      'warn',
+      'Portal showed no explicit verification result; reporting unknown',
+      { domain, listedDomains: rows.length },
+    );
+    return { outcome: 'unknown', verificationExpiresAt: null };
+  }
+
+  /**
+   * Block until the domain's Verify screen has rendered.
+   *
+   * Keyed on the Download link, which exists only on that screen — the merchant
+   * list has Remove/Verify per row and no download anywhere. Waiting on it is
+   * what stops the next click from running against the list DOM.
+   */
+  private async waitForVerifyScreen(page: Page, domain: string): Promise<void> {
+    try {
       await page
         .locator(MERCHANT_SELECTORS.download)
         .first()
@@ -131,52 +350,132 @@ export class ApplePortalClient {
             'PLAYWRIGHT_ACTION_TIMEOUT_MS',
           ),
         });
-
-      return this.downloadAssociationFile(page, domain);
-    });
+    } catch {
+      throw new PortalElementNotFoundError(`verify-screen-${domain}`, [
+        MERCHANT_SELECTORS.download,
+      ]);
+    }
   }
 
   /**
-   * Ask Apple to fetch the association file from the domain and mark it
-   * verified. The file must already be live — call this only after the probe
-   * confirms it.
+   * The modal's message when it is reporting a failure, else undefined.
+   *
+   * The container class is generic — Apple uses the same modal for neutral
+   * information — so presence alone proves nothing. Only a message matching a
+   * known failure phrase counts, which means an unrecognised modal falls through
+   * to the list check rather than being misreported as a rejection.
    */
-  async verifyDomain(domain: string): Promise<VerifyResult> {
-    return this.withMerchantPage(`verify-${domain}`, async (page) => {
-      await this.click(page, 'verify-domain', MERCHANT_SELECTORS.verify, {
-        fallback: MERCHANT_FALLBACK_SELECTORS.verify,
-        domain,
-      });
+  private async readFailureModal(page: Page): Promise<string | undefined> {
+    const modal = page.locator(PORTAL_MODAL_SELECTORS.container).first();
+    if ((await modal.count()) === 0 || !(await modal.isVisible())) {
+      return undefined;
+    }
 
-      await this.assertNoPortalError(page, 'verify-domain');
+    const text = (
+      (await page
+        .locator(PORTAL_MODAL_SELECTORS.message)
+        .first()
+        .textContent()
+        .catch(() => null)) ??
+      (await modal.textContent().catch(() => null)) ??
+      ''
+    ).trim();
 
-      // The portal gives no machine-readable success signal, so wait for it to
-      // settle and then look for the domain being reported as verified. When
-      // neither a success marker nor an error appears, report 'unknown' rather
-      // than claiming success — a false "verified" in the audit trail is worse
-      // than an honest "check the portal".
-      await page
-        .waitForLoadState('networkidle', {
-          timeout: this.config.getOrThrow<number>('PLAYWRIGHT_NAV_TIMEOUT_MS'),
-        })
-        .catch(() => undefined);
+    if (text === '') return undefined;
+    return VERIFICATION_FAILURE_MARKERS.some((marker) => marker.test(text))
+      ? text
+      : undefined;
+  }
 
-      const verifiedMarker = page
-        .locator('section')
-        .filter({ hasText: domain })
-        .filter({ hasText: /verified/i });
+  /**
+   * Close the modal so the session is reusable. Best effort: a stuck dialog is
+   * not worth failing an operation whose verdict we already have.
+   */
+  private async dismissModal(page: Page): Promise<void> {
+    const ok = page.locator(PORTAL_MODAL_SELECTORS.dismiss).first();
+    if ((await ok.count()) > 0) {
+      await ok.click().catch(() => undefined);
+    }
+  }
 
-      if ((await verifiedMarker.count()) > 0) {
-        return { outcome: 'verified' as const };
-      }
-
+  /**
+   * Apple's expiry for a verified row, or null with a loud log. Null is a real
+   * outcome to be surfaced, not a default to be quietly filled in.
+   */
+  private readExpiry(domain: string, row: MerchantDomainRow): Date | null {
+    if (row.expiresText === undefined) {
       this.logger.emit(
-        'warn',
-        'Portal showed no explicit verification result; reporting unknown',
+        'error',
+        'Domain is verified but the portal published no expiry date',
         { domain },
       );
-      return { outcome: 'unknown' as const };
+      return null;
+    }
+
+    const parsed = parseAppleExpiryDate(row.expiresText);
+    if (parsed === undefined) {
+      this.logger.emit('error', 'Could not parse the portal expiry date', {
+        domain,
+        raw: row.expiresText,
+      });
+      return null;
+    }
+
+    this.logger.emit('info', 'Read verification expiry from the portal', {
+      domain,
+      raw: row.expiresText,
+      verificationExpiresAt: parsed.toISOString(),
     });
+    return parsed;
+  }
+
+  /**
+   * Every domain Apple lists on the merchant identifier, with its status and
+   * expiry.
+   *
+   * One round trip per block via allTextContents(): a per-span textContent() walk
+   * costs a CDP call each, which on a 47-domain merchant page is hundreds of them.
+   */
+  private async readDomainRows(page: Page): Promise<MerchantDomainRow[]> {
+    const blocks = await this.domainBlocks(page);
+    const total = await blocks.count();
+    const rows: MerchantDomainRow[] = [];
+    for (let index = 0; index < total; index += 1) {
+      const row = toDomainRow(await this.blockTexts(blocks.nth(index)));
+      if (row !== undefined) rows.push(row);
+    }
+    return rows;
+  }
+
+  /**
+   * The block for exactly this domain, or undefined.
+   *
+   * Matches the parsed `Domain:` cell, not page text: `secureorder.avixa.co` is a
+   * substring of `secureorder.avixa.com`, and both are registered here.
+   */
+  private async findDomainBlock(
+    page: Page,
+    domain: string,
+  ): Promise<Locator | undefined> {
+    const blocks = await this.domainBlocks(page);
+    const total = await blocks.count();
+    for (let index = 0; index < total; index += 1) {
+      const block = blocks.nth(index);
+      const row = toDomainRow(await this.blockTexts(block));
+      if (row?.domain === domain.toLowerCase()) return block;
+    }
+    return undefined;
+  }
+
+  /** Semantic selector first, the brief's structural path as a second opinion. */
+  private async domainBlocks(page: Page): Promise<Locator> {
+    const semantic = page.locator(MERCHANT_DOMAIN_LIST_SELECTORS.block);
+    if ((await semantic.count()) > 0) return semantic;
+    return page.locator(MERCHANT_DOMAIN_LIST_STRUCTURAL_SELECTORS.block);
+  }
+
+  private blockTexts(block: Locator): Promise<string[]> {
+    return block.locator(MERCHANT_DOMAIN_LIST_SELECTORS.row).allTextContents();
   }
 
   // ── internals ───────────────────────────────────────────────────────────
@@ -216,9 +515,26 @@ export class ApplePortalClient {
     }
   }
 
+  /**
+   * Whether Apple already has this domain on the merchant identifier.
+   *
+   * Compares the parsed `Domain:` cell exactly. An unanchored `text=${domain}`
+   * matches substrings anywhere on the page, so registering
+   * `secureorder.avixa.co` reported "already registered" whenever
+   * `secureorder.avixa.com` was present — a false positive that blocks a
+   * legitimate registration, and both of those domains exist on this merchant.
+   *
+   * The substring check is kept for the case where the list does not parse at
+   * all, so a DOM change degrades to the old behaviour instead of reporting "not
+   * listed" and adding a duplicate.
+   */
   private async isDomainListed(page: Page, domain: string): Promise<boolean> {
-    const listed = page.locator(`text=${domain}`);
-    return (await listed.count()) > 0;
+    const target = domain.toLowerCase();
+    const rows = await this.readDomainRows(page);
+    if (rows.length > 0) {
+      return rows.some((row) => row.domain === target);
+    }
+    return (await page.locator(`text=${domain}`).count()) > 0;
   }
 
   private async downloadAssociationFile(

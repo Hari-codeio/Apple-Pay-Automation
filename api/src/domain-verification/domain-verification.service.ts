@@ -5,7 +5,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppLogger } from '../observability/app-logger';
-import { ApplePortalClient } from '../apple-portal/apple-portal.client';
+import {
+  ApplePortalClient,
+  type AssociationFile,
+  type VerifyOutcome,
+  type VerifyResult,
+} from '../apple-portal/apple-portal.client';
 import { DomainProbeService } from './domain-probe.service';
 import { DomainVerificationRepository } from './domain-verification.repository';
 import { normalizeDomain } from './domain.util';
@@ -13,6 +18,7 @@ import type {
   DomainVerificationRecord,
   ProbeOutcome,
   RegistrationResult,
+  VerificationStatus,
 } from './domain-verification.types';
 
 export interface RegisterDomainInput {
@@ -135,12 +141,16 @@ export class DomainVerificationService {
     const verification = await this.runAppleVerification(record.domain);
     return {
       domain: record.domain,
-      status: verification === 'verified' ? 'active' : 'pending',
+      status: statusForOutcome(verification.outcome),
       contentSha256: record.contentSha256,
       savedTo: '',
       probe,
-      verification,
-      verificationExpiresAt: record.verificationExpiresAt ?? '',
+      verification: verification.outcome,
+      // Prefer what the portal just published; fall back to the stored value,
+      // which markActive leaves intact when the scrape could not read a date.
+      verificationExpiresAt:
+        verification.verificationExpiresAt?.toISOString() ??
+        record.verificationExpiresAt,
     };
   }
 
@@ -228,7 +238,6 @@ export class DomainVerificationService {
   ): Promise<RegistrationResult> {
     const merchantId = this.config.getOrThrow<string>('APPLE_MERCHANT_ID');
     const appleTeamId = this.config.getOrThrow<string>('APPLE_TEAM_ID');
-    const expiresAt = this.expiryDate();
 
     this.logger.emit('info', 'Starting domain verification', {
       domain,
@@ -236,75 +245,151 @@ export class DomainVerificationService {
       skipVerify: input.skipVerify === true,
     });
 
-    // 1 + 2: register on the portal and download the association file.
-    const file = await this.portal.registerDomain(domain);
-
-    // 3: persist BEFORE any verification attempt. Apple reads the file from the
+    // Persist BEFORE Apple is asked to look. Apple reads the file from the
     // domain, and the domain reads it from this table.
-    await this.repository.upsert({
-      domain,
-      storeCode: input.storeCode ?? null,
-      merchantId,
-      appleTeamId,
-      verificationFile: file.content,
-      contentSha256: file.contentSha256,
-      status: 'pending',
-      verificationExpiresAt: expiresAt,
-    });
+    const persist = (file: AssociationFile): Promise<void> =>
+      this.repository.upsert({
+        domain,
+        storeCode: input.storeCode ?? null,
+        merchantId,
+        appleTeamId,
+        verificationFile: file.content,
+        contentSha256: file.contentSha256,
+        status: 'pending',
+        // Apple publishes an expiry only once it has verified, so there is
+        // nothing to record here. The real date is read straight after Verify.
+        verificationExpiresAt: null,
+      });
 
-    const result: RegistrationResult = {
-      domain,
-      status: 'pending',
-      contentSha256: file.contentSha256,
-      savedTo: file.savedTo,
-      verification: 'not-attempted',
-      verificationExpiresAt: expiresAt.toISOString(),
-    };
-
+    // Register-only. No Verify click, so the session need not stay open.
     if (input.skipVerify === true) {
-      result.verification = 'skipped';
+      const file = await this.portal.registerDomain(domain);
+      await persist(file);
       this.logger.emit('info', 'Verification skipped at caller request', {
         domain,
       });
-      return result;
+      return {
+        domain,
+        status: 'pending',
+        contentSha256: file.contentSha256,
+        savedTo: file.savedTo,
+        verification: 'skipped',
+        verificationExpiresAt: null,
+      };
     }
 
-    // 4: confirm the file is live, unless probing is switched off (which is only
-    // sensible when the file is served by infrastructure this service cannot
-    // reach, e.g. a private network).
-    if (this.config.get<boolean>('DOMAIN_PROBE_ENABLED') ?? true) {
-      const probe = await this.probes.probe(domain, file.contentSha256);
-      result.probe = probe;
-      await this.repository.recordProbe(domain, probe.ok);
+    // Register → store → probe → Verify, all in ONE browser session. The Verify
+    // control for this registration exists only on the confirmation screen Save
+    // renders; close the browser in between and it is gone, leaving the per-row
+    // buttons on the merchant list where choosing correctly among ~46 rows is a
+    // guess. The probe runs inside the callback, after the row is written and
+    // before the click, so a file Apple cannot fetch costs no rate-limited
+    // attempt.
+    let probe: ProbeOutcome | undefined;
+    const { file, verification } = await this.portal.registerAndVerify(
+      domain,
+      async (downloaded) => {
+        await persist(downloaded);
+        probe = await this.probeBeforeVerify(domain, downloaded.contentSha256);
+      },
+    );
 
-      if (!probe.ok) {
-        await this.repository.markStatus(domain, 'failed');
-        result.status = 'failed';
-        // Stop rather than click Verify anyway: a failed Apple verification is
-        // rate-limited and its error message would not mention the real cause.
-        throw new ConflictException(
-          `Association file for '${domain}' is not live at ${probe.url} after ${probe.attempts} attempt(s) ` +
-            `(${probe.reason ?? 'unknown'}${probe.detail === undefined ? '' : `: ${probe.detail}`}). ` +
-            `The file is stored — deploy it, then POST /domain-verifications/${domain}/reverify`,
-        );
-      }
-    }
+    await this.recordVerification(domain, verification);
 
-    // 5: hand off to Apple.
-    result.verification = await this.runAppleVerification(domain);
-    result.status = result.verification === 'verified' ? 'active' : 'pending';
-    return result;
+    return {
+      domain,
+      status: statusForOutcome(verification.outcome),
+      contentSha256: file.contentSha256,
+      savedTo: file.savedTo,
+      probe,
+      verification: verification.outcome,
+      verificationExpiresAt:
+        verification.verificationExpiresAt?.toISOString() ?? null,
+    };
   }
 
-  private async runAppleVerification(
+  /**
+   * Confirm Apple will actually find the file, before spending a click on a
+   * rate-limited check whose error message would not name the real cause.
+   *
+   * Returns undefined when probing is switched off — sensible only when the file
+   * is served by infrastructure this service cannot reach.
+   */
+  private async probeBeforeVerify(
     domain: string,
-  ): Promise<'verified' | 'unknown'> {
-    const { outcome } = await this.portal.verifyDomain(domain);
-    if (outcome === 'verified') {
-      await this.repository.markActive(domain);
-      this.logger.emit('info', 'Domain verified by Apple', { domain });
-      return 'verified';
+    contentSha256: string,
+  ): Promise<ProbeOutcome | undefined> {
+    if ((this.config.get<boolean>('DOMAIN_PROBE_ENABLED') ?? true) === false) {
+      return undefined;
     }
+
+    const probe = await this.probes.probe(domain, contentSha256);
+    await this.repository.recordProbe(domain, probe.ok);
+    if (probe.ok) return probe;
+
+    await this.repository.markStatus(domain, 'failed');
+    throw new ConflictException(
+      `Association file for '${domain}' is not live at ${probe.url} after ${probe.attempts} attempt(s) ` +
+        `(${probe.reason ?? 'unknown'}${probe.detail === undefined ? '' : `: ${probe.detail}`}). ` +
+        `The file is stored — deploy it, then POST /domain-verifications/${domain}/reverify`,
+    );
+  }
+
+  /**
+   * Drive Apple's verification and record the expiry Apple publishes for it.
+   *
+   * The expiry is only knowable here. Apple issues it when it verifies the domain
+   * and shows it only on the merchant list, so there is nothing to record at
+   * registration time.
+   */
+  /** Reverify path: click Verify from the merchant list, then record the verdict. */
+  private async runAppleVerification(domain: string): Promise<VerifyResult> {
+    const verification = await this.portal.verifyDomain(domain);
+    await this.recordVerification(domain, verification);
+    return verification;
+  }
+
+  /**
+   * Write Apple's verdict to the row. Shared by both entry points so the register
+   * and reverify paths cannot drift on what a verdict means.
+   */
+  private async recordVerification(
+    domain: string,
+    verification: VerifyResult,
+  ): Promise<void> {
+    if (verification.outcome === 'verified') {
+      await this.repository.markActive(
+        domain,
+        verification.verificationExpiresAt,
+      );
+      this.logger.emit('info', 'Domain verified by Apple', {
+        domain,
+        verificationExpiresAt:
+          verification.verificationExpiresAt?.toISOString() ?? null,
+      });
+      if (verification.verificationExpiresAt === null) {
+        // Not fatal — the domain IS verified and serving. But nothing now knows
+        // when Apple stops trusting it, so it must not pass unremarked.
+        this.logger.emit(
+          'error',
+          'Verified without a usable expiry date; renewal cannot be scheduled from this row',
+          { domain },
+        );
+      }
+      return;
+    }
+
+    if (verification.outcome === 'failed') {
+      // 'failed', not 'pending': Apple named the reason in its own words, so
+      // recording it as merely unfinished would hide a verdict we actually have.
+      await this.repository.markStatus(domain, 'failed');
+      this.logger.emit('error', 'Apple rejected the domain verification', {
+        domain,
+        portalMessage: verification.portalMessage ?? null,
+      });
+      return;
+    }
+
     // Left 'pending', not 'failed': Apple gave no verdict, and recording a
     // failure we did not observe would send an operator chasing a fault that may
     // not exist.
@@ -313,11 +398,12 @@ export class DomainVerificationService {
       'Apple returned no explicit verdict; record left pending',
       { domain },
     );
-    return 'unknown';
   }
+}
 
-  private expiryDate(): Date {
-    const days = this.config.getOrThrow<number>('VERIFICATION_TTL_DAYS');
-    return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
-  }
+/** Row status implied by Apple's verdict. */
+function statusForOutcome(outcome: VerifyOutcome): VerificationStatus {
+  if (outcome === 'verified') return 'active';
+  if (outcome === 'failed') return 'failed';
+  return 'pending';
 }

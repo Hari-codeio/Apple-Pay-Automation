@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "apple-pay-automation chart values",
+  "description": "Validates the shape of values.yaml + deploy/<env>/values.yaml when helm renders the chart. A mismatched shape fails at `helm install/upgrade` instead of producing a half-broken Deployment.",
+  "type": "object",
+  "required": ["app", "deployment"],
+  "definitions": {
+    "k8sResources": {
+      "type": "object",
+      "required": ["cpu", "memory"],
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "description": "CPU request or limit, in cores or milli-cores (e.g. 0.5, 1, \"500m\").",
+          "oneOf": [
+            { "type": "number" },
+            { "type": "string", "pattern": "^([+-]?[0-9.]+)m?$" }
+          ]
+        },
+        "memory": {
+          "description": "Memory request or limit (e.g. \"1Gi\", \"256Mi\").",
+          "type": "string",
+          "pattern": "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$"
+        }
+      }
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "env",
+        "image",
+        "resources",
+        "config",
+        "secrets",
+        "service",
+        "ingress",
+        "probes",
+        "session",
+        "securityContext",
+        "containerPort",
+        "replicaCount",
+        "dshmSizeMi",
+        "artifactsSizeMi"
+      ],
+      "properties": {
+        "env": {
+          "type": "string",
+          "description": "Environment slug. Drives the DataDog env tag.",
+          "enum": [
+            "development",
+            "staging",
+            "preprod",
+            "production",
+            "test1",
+            "test2"
+          ]
+        },
+        "imagePullSecrets": {
+          "type": "string",
+          "description": "Name of the k8s Secret carrying GHCR pull credentials. Empty string omits imagePullSecrets from the pod spec."
+        },
+        "serviceAccount": {
+          "type": "string",
+          "description": "ServiceAccount name. Empty string means the namespace default."
+        },
+        "nodeSelector": {
+          "type": "object",
+          "description": "Node labels the pod must match.",
+          "additionalProperties": { "type": "string" }
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "imagePullPolicy"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 },
+            "version": {
+              "type": "string",
+              "description": "Takes precedence over tag when set.",
+              "minLength": 1
+            },
+            "imagePullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"]
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requests", "limits"],
+          "properties": {
+            "requests": { "$ref": "#/definitions/k8sResources" },
+            "limits": { "$ref": "#/definitions/k8sResources" }
+          }
+        },
+        "securityContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runAsUser", "runAsGroup", "fsGroup"],
+          "properties": {
+            "runAsUser": { "type": "integer", "minimum": 1 },
+            "runAsGroup": { "type": "integer", "minimum": 1 },
+            "fsGroup": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Group that owns mounted volumes. Must match runAsGroup or the session PVC is unwritable."
+            }
+          }
+        },
+        "session": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["persistence"],
+          "properties": {
+            "persistence": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled"],
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "existingClaim": { "type": "string" },
+                "storageClassName": { "type": "string" },
+                "size": {
+                  "type": "string",
+                  "pattern": "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$"
+                }
+              }
+            }
+          }
+        },
+        "dshmSizeMi": {
+          "type": "integer",
+          "minimum": 64,
+          "description": "/dev/shm size in MiB. Chromium crashes near the 64Mi container default."
+        },
+        "artifactsSizeMi": { "type": "integer", "minimum": 16 },
+        "containerPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1,
+          "description": "Pinned to 1: in-process de-duplication, one session volume, one cron."
+        },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+        "preStopSleepSeconds": { "type": "integer", "minimum": 0 },
+        "config": {
+          "type": "object",
+          "description": "Non-secret env, rendered into a hash-versioned ConfigMap. Values must be strings — k8s ConfigMap data is string-only.",
+          "additionalProperties": { "type": "string" }
+        },
+        "secrets": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "name": {
+              "type": "string",
+              "description": "1Password vault name."
+            },
+            "itemPath": {
+              "type": "string",
+              "description": "1Password item name within the vault."
+            }
+          }
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "type": {
+              "type": "string",
+              "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+            },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "host": { "type": "string" },
+            "path": { "type": "string" },
+            "pathType": {
+              "type": "string",
+              "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+            },
+            "ingressClassName": { "type": "string" },
+            "sslPolicy": { "type": "string" },
+            "scheme": {
+              "type": "string",
+              "enum": ["internet-facing", "internal"]
+            },
+            "subnets": { "type": "string" },
+            "certificateArn": { "type": "string" },
+            "healthcheckPath": { "type": "string" },
+            "healthcheckPort": { "type": "string" },
+            "listenPorts": { "type": "string" },
+            "targetType": { "type": "string", "enum": ["ip", "instance"] }
+          }
+        },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "livenessHttpPath": { "type": "string" },
+            "readinessHttpPath": { "type": "string" },
+            "startupHttpPath": { "type": "string" },
+            "startupFailureThreshold": { "type": "integer", "minimum": 1 },
+            "livenessFailureThreshold": { "type": "integer", "minimum": 1 },
+            "readinessFailureThreshold": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha"],
+      "properties": {
+        "sha": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Git SHA of the running image; surfaces as tags.datadoghq.com/version."
+        }
+      }
+    }
+  }
+}

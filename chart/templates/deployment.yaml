@@ -1,0 +1,158 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+    {{- include "app.datadogLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.app.replicaCount }}
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "app.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  strategy:
+    # Recreate, not RollingUpdate, and never more than one replica:
+    #   - concurrent registrations are de-duplicated in-process (an in-memory
+    #     Map keyed by domain), so a second pod would drive the Apple portal
+    #     twice for the same domain and race on the same UNIQUE row;
+    #   - the Apple portal session lives on one ReadWriteOnce volume;
+    #   - the renewal cron must fire on exactly one pod.
+    # A deploy therefore takes the service down for the pod boot window.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "app.labels" . | nindent 8 }}
+        app.kubernetes.io/component: app
+        {{- include "app.datadogLabels" . | nindent 8 }}
+      annotations:
+        # DataDog log auto-discovery. The key suffix must be the CONTAINER name
+        # (.Chart.Name), not the fullname.
+        ad.datadoghq.com/{{ .Chart.Name }}.logs: '[{"service":"{{ include "app.fullname" . }}","source":"nodejs"}]'
+        ad.datadoghq.com/tags: '{"env": "{{ .Values.app.env }}", "service":"{{ include "app.fullname" . }}"}'
+    spec:
+      {{- if .Values.app.serviceAccount }}
+      serviceAccountName: {{ .Values.app.serviceAccount }}
+      automountServiceAccountToken: true
+      {{- end }}
+      {{- if .Values.app.imagePullSecrets }}
+      imagePullSecrets:
+        - name: {{ .Values.app.imagePullSecrets }}
+      {{- end }}
+      {{- with .Values.app.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.app.terminationGracePeriodSeconds }}
+      securityContext:
+        # The image's own non-root user. fsGroup is what makes the session PVC
+        # writable by it — without it the volume mounts root-owned and the first
+        # session write fails with EACCES.
+        runAsNonRoot: true
+        runAsUser: {{ .Values.app.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.app.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.app.securityContext.fsGroup }}
+      volumes:
+        # Chromium crashes with the container-default 64Mi /dev/shm. Memory-backed,
+        # so it counts against the pod memory limit.
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.app.dshmSizeMi }}Mi
+        # Playwright traces and downloaded association files. Ephemeral on
+        # purpose: they are post-mortem evidence, and the durable copy of the
+        # association file is the database row.
+        - name: artifacts
+          emptyDir:
+            sizeLimit: {{ .Values.app.artifactsSizeMi }}Mi
+        - name: session
+          {{- if .Values.app.session.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.app.session.persistence.existingClaim | default (include "app.sessionClaimName" .) }}
+          {{- else }}
+          # No PVC: the Apple session is lost on every restart and has to be
+          # re-established interactively, which cannot be done inside a pod.
+          # Acceptable only for a throwaway environment.
+          emptyDir: {}
+          {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: '{{ include "app.image" . }}'
+          imagePullPolicy: {{ .Values.app.image.imagePullPolicy | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.containerPort }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "app.fullname" . }}-{{ include "app.configVersion" . }}
+            {{- if .Values.app.secrets.enabled }}
+            - secretRef:
+                # The 1Password Operator creates a k8s Secret with the SAME name
+                # as the OnePasswordItem CR (see secrets.yaml).
+                name: {{ include "app.fullname" . }}-{{ include "app.secretVersion" . }}
+            {{- end }}
+          {{- if .Values.app.probes.enabled }}
+          # Startup and liveness use /api/healthz, which answers without
+          # touching MySQL. Readiness uses /api/readyz, which does check it — so
+          # a database flap drains the pod from the Service instead of
+          # restarting it mid-verification.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.app.probes.startupHttpPath }}
+              port: http
+            periodSeconds: 5
+            failureThreshold: {{ .Values.app.probes.startupFailureThreshold }}
+            successThreshold: 1
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.app.probes.livenessHttpPath }}
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: {{ .Values.app.probes.livenessFailureThreshold }}
+            successThreshold: 1
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.app.probes.readinessHttpPath }}
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: {{ .Values.app.probes.readinessFailureThreshold }}
+            successThreshold: 1
+            timeoutSeconds: 3
+          {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                # Covers kube-proxy iptables propagation so in-flight requests
+                # do not hit a shutting-down pod. The app's own SIGTERM handling
+                # drains the MySQL pool.
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep {{ .Values.app.preStopSleepSeconds }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+            # NOT read-only: Chromium writes its own profile and crash dumps
+            # under the home directory, and Playwright writes traces.
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: artifacts
+              mountPath: /app/.artifacts
+            - name: session
+              mountPath: /app/.playwright

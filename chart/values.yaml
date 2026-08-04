@@ -1,0 +1,219 @@
+# Default values for apple-pay-automation.
+#
+# Defaults common to ALL environments. Per-env overrides live in
+# deploy/<env>/values.yaml and are passed to helm via:
+#
+#     helm upgrade --install apple-pay-automation ./chart \
+#         --namespace <env> \
+#         -f ./deploy/<env>/values.yaml \
+#         --set app.image.repository=ghcr.io/phoenixtechnologies-io/apple-pay-automation \
+#         --set app.image.tag=$IMAGE_TAG \
+#         --set deployment.sha=$IMAGE_TAG
+#
+# Mirrors the google-pay-automation chart. Deviations, all forced by what this
+# app is:
+#   - Recreate strategy + exactly 1 replica, no HPA: concurrent registrations
+#     are de-duplicated in an in-process Map, the Apple session is on one
+#     ReadWriteOnce volume, and the renewal cron must fire on one pod only.
+#   - Runs NON-root. The image is mcr.microsoft.com/playwright, whose `pwuser`
+#     (uid 1000) owns the browser install, so unlike the google-pay chart there
+#     is no root + --no-sandbox requirement.
+#   - A small PVC for the Apple portal session. google-pay tarballs its Chrome
+#     profile to S3; this service has no such sync, and the session can only be
+#     re-created by a human completing 2FA — so it must outlive the pod.
+#   - /dev/shm is a memory-backed emptyDir: Chromium crashes on the container
+#     default 64Mi.
+
+app:
+  # Environment slug. Overridden in deploy/<env>/values.yaml.
+  env: development
+
+  # Image-pull credential set for GHCR. The conditional in deployment.yaml omits
+  # imagePullSecrets when this is empty.
+  imagePullSecrets: ghcr-secret
+
+  image:
+    # Overridden at deploy time by --set app.image.repository=...
+    repository: 'placeholder'
+    tag: latest
+    imagePullPolicy: Always
+
+  # ServiceAccount the pod runs as. Empty string means the default SA.
+  serviceAccount: ''
+
+  # nodeSelector for scheduling. Non-prod pools use `role: <env>-workers`;
+  # production omits the selector.
+  nodeSelector: {}
+
+  # A verification run holds a Chromium instance plus the Node server. Memory is
+  # the constraint; the browser is short-lived per request.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: '2'
+      memory: 3Gi
+
+  # /dev/shm size (memory-backed emptyDir). Counts against the pod memory limit.
+  dshmSizeMi: 512
+
+  # Playwright traces + downloaded association files. Ephemeral: the durable
+  # copy of the file is the database row.
+  artifactsSizeMi: 512
+
+  # Container port the NestJS server listens on (PORT env).
+  containerPort: 3000
+
+  # uid/gid of `pwuser` in the Playwright base image. fsGroup is what makes the
+  # session PVC writable by it.
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+  # The Apple portal session (api/.playwright). Holds a live authenticated
+  # session — treat as a credential.
+  session:
+    persistence:
+      # Off by default so a throwaway environment does not provision storage.
+      # MUST be on anywhere the session matters: without it every restart loses
+      # the session, and re-establishing it needs an interactive 2FA login that
+      # cannot be performed inside a pod.
+      enabled: false
+      # Set to reuse a claim created outside this chart; empty means the chart
+      # creates one (annotated helm.sh/resource-policy: keep).
+      existingClaim: ''
+      storageClassName: ''
+      size: 1Gi
+
+  # Termination handling. preStop covers kube-proxy iptables propagation; the
+  # app drains its MySQL pool on SIGTERM.
+  terminationGracePeriodSeconds: 60
+  preStopSleepSeconds: 15
+
+  ingress:
+    enabled: false
+    pathType: Prefix
+    path: /
+    ingressClassName: alb
+    sslPolicy: ELBSecurityPolicy-TLS13-1-2-Res-2021-06
+    scheme: internet-facing
+    # Subnets + shared *.phoenixcrm.io cert reused across cluster Ingresses.
+    subnets: subnet-049b19906d67f3641,subnet-02202ac268019ad25
+    certificateArn: arn:aws:acm:us-west-1:291977134965:certificate/41f3539b-63bb-45d4-a7d5-0a4c901ad066
+    # Unauthenticated route — see the note in templates/ingress.yaml.
+    healthcheckPath: /api/healthz
+    healthcheckPort: '3000'
+    listenPorts: '[{"HTTPS":443}]'
+    targetType: ip
+    # Host is environment-specific; set in deploy/<env>/values.yaml.
+    # host: applepay-staging.phoenixcrm.io
+
+  service:
+    enabled: false
+    type: ClusterIP
+    port: 80
+
+  # Non-secret runtime config, rendered as a hash-versioned ConfigMap so a value
+  # change forces a rolling restart automatically.
+  #
+  # Secrets are NOT here — see app.secrets. That means DB_PASSWORD, API_KEY,
+  # APPLE_ID_EMAIL and APPLE_ID_PASSWORD.
+  config:
+    NODE_ENV: production
+    PORT: '3000'
+    SERVICE_NAME: apple-pay-api
+    LOG_LEVEL: info
+    # Structured JSON logs; pretty-printing is for a terminal.
+    LOG_PRETTY: 'false'
+    # Behind an ALB, so the client IP comes from X-Forwarded-For. Rate limiting
+    # is per-client and reads this.
+    TRUST_PROXY: '1'
+    BODY_LIMIT: 256kb
+    THROTTLE_TTL_SECONDS: '60'
+    THROTTLE_LIMIT: '100'
+    # The schema refuses SWAGGER_ENABLED=true in production.
+    SWAGGER_ENABLED: 'false'
+
+    DB_PORT: '3306'
+    DB_POOL_SIZE: '5'
+    DB_CONNECT_TIMEOUT_MS: '10000'
+    DB_SSL: 'true'
+    # Baked into the image at api/certs. Without it the RDS handshake fails with
+    # "unable to get local issuer certificate".
+    DB_SSL_CA_PATH: ./certs/rds-global-bundle.pem
+
+    APPLE_PORTAL_BASE_URL: https://developer.apple.com
+    APPLE_SESSION_STATE_PATH: .playwright/apple-portal-state.json
+
+    # The Playwright base image ships Chromium, not branded Chrome. Locally this
+    # is `chrome` to drive a real profile; in-cluster there is no such profile.
+    BROWSER_CHANNEL: chromium
+    # BROWSER_USER_DATA_DIR is deliberately ABSENT: with it set the flow drives a
+    # persistent on-disk Chrome profile, which is a developer-laptop mode. Unset,
+    # it uses a throwaway browser seeded from APPLE_SESSION_STATE_PATH — the file
+    # on the session volume.
+    #
+    # Sandbox OFF, and only because of the pod's securityContext: it drops ALL
+    # capabilities, and Chromium's setuid sandbox needs kernel privileges it no
+    # longer has. Re-enable by granting SYS_ADMIN (or a seccomp profile allowing
+    # unshare/clone) and flipping this to 'true' — the app defaults it ON, since
+    # the browser loads a site we do not control.
+    BROWSER_SANDBOX: 'false'
+    # Attach-only. Nothing starts a debug Chrome inside the pod.
+    BROWSER_CDP_AUTOSTART: 'false'
+
+    # Headless in-cluster: there is no display, and no operator to watch it.
+    PLAYWRIGHT_HEADLESS: 'true'
+    PLAYWRIGHT_SLOW_MO_MS: '0'
+    PLAYWRIGHT_NAV_TIMEOUT_MS: '45000'
+    PLAYWRIGHT_ACTION_TIMEOUT_MS: '20000'
+    PLAYWRIGHT_DOWNLOAD_DIR: .artifacts/downloads
+    PLAYWRIGHT_TRACE_DIR: .artifacts/traces
+    # The only record of a DOM we do not control at the moment it stopped
+    # matching our selectors.
+    PLAYWRIGHT_TRACE_ON_FAILURE: 'true'
+
+    DOMAIN_PROBE_ENABLED: 'true'
+    DOMAIN_PROBE_TIMEOUT_MS: '10000'
+    DOMAIN_PROBE_ATTEMPTS: '5'
+    DOMAIN_PROBE_DELAY_MS: '2000'
+
+    # Off: the CRM backend owns /.well-known/... in this deployment, and two
+    # services answering it is a split brain.
+    WELL_KNOWN_SERVE_ENABLED: 'false'
+
+    # Renewal sweep. Off here so enabling it is an explicit per-env decision on
+    # exactly one deployment.
+    CRON_ENABLED: 'false'
+    RENEWAL_CRON: '0 3 * * *'
+
+    # Per-env (set in deploy/<env>/values.yaml):
+    #   ENVIRONMENT, DB_HOST, DB_NAME, DB_USER, CORS_ALLOWED_ORIGINS,
+    #   APPLE_TEAM_ID, APPLE_MERCHANT_ID
+
+  # Secrets sync from 1Password via the cluster's 1Password Operator.
+  # The item must hold: DB_PASSWORD, API_KEY, APPLE_ID_EMAIL, APPLE_ID_PASSWORD.
+  secrets:
+    enabled: false
+    name: 'Engineering - Test'
+    itemPath: apple-pay-automation-secrets
+
+  # Container probes. /api/healthz answers without MySQL; /api/readyz checks it.
+  probes:
+    enabled: true
+    livenessHttpPath: /api/healthz
+    readinessHttpPath: /api/readyz
+    startupHttpPath: /api/healthz
+    startupFailureThreshold: 30
+    livenessFailureThreshold: 3
+    readinessFailureThreshold: 12
+
+  # Always 1 — see the strategy comment in templates/deployment.yaml.
+  replicaCount: 1
+
+# Deployment metadata. `sha` is injected at deploy time via
+# --set deployment.sha=$IMAGE_TAG and surfaces as tags.datadoghq.com/version.
+deployment:
+  sha: placeholder

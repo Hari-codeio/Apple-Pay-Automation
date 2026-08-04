@@ -336,13 +336,12 @@ export class DomainVerificationService {
   }
 
   /**
-   * Drive Apple's verification and record the expiry Apple publishes for it.
+   * Reverify path: click Verify from the merchant list, then record the verdict.
    *
-   * The expiry is only knowable here. Apple issues it when it verifies the domain
-   * and shows it only on the merchant list, so there is nothing to record at
-   * registration time.
+   * The expiry is only knowable at this point. Apple issues it when it verifies
+   * the domain and shows it only on the merchant list, so there is nothing to
+   * record at registration time.
    */
-  /** Reverify path: click Verify from the merchant list, then record the verdict. */
   private async runAppleVerification(domain: string): Promise<VerifyResult> {
     const verification = await this.portal.verifyDomain(domain);
     await this.recordVerification(domain, verification);

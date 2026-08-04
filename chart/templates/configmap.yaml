@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # Hash-versioned name. A change to .Values.app.config produces a new hash and
+  # thus a new ConfigMap object, which forces the Deployment to roll a new pod
+  # (its envFrom references the new name). The previous object is left in place
+  # until a future release no longer references it.
+  name: {{ include "app.fullname" . }}-{{ include "app.configVersion" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+    {{- include "app.datadogLabels" . | nindent 4 }}
+data:
+{{- range $key, $value := .Values.app.config }}
+  {{ $key }}: {{ $value | quote }}
+{{- end }}

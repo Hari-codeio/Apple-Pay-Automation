@@ -111,9 +111,12 @@ export class ApplePortalClient {
    * Register `domain` on the merchant identifier and download the association
    * file Apple generates for it.
    *
-   * Idempotent in effect: when the domain is already registered, the Add Domain
-   * step is skipped and the existing file is downloaded, so a retried run does
-   * not fail on "domain already exists".
+   * NOT idempotent, and deliberately so: a domain Apple already lists is rejected
+   * up front by `addDomainAndDownload`. Apple renders the association file only on
+   * the confirmation screen shown right after an add, so there is nothing to
+   * re-download for an existing registration — pretending otherwise is what once
+   * sent this code hunting for a control that was not on the page. The recovery
+   * path is `reverify`, against the file already stored.
    */
   async registerDomain(domain: string): Promise<AssociationFile> {
     return this.withMerchantPage(`register-${domain}`, (page) =>

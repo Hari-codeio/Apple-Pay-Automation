@@ -1,0 +1,143 @@
+suite: Deployment template
+templates:
+  - deployment.yaml
+tests:
+  - it: never rolls two pods over each other
+    # Concurrent registrations are de-duplicated in an in-process Map, the Apple
+    # session is on one ReadWriteOnce volume, and the renewal cron must fire
+    # once. Two overlapping pods break all three.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: runs as the image's non-root user with a matching fsGroup
+    # fsGroup is what makes the session PVC writable by pwuser; without it the
+    # first session write fails with EACCES.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 1000
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 1000
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          content: ALL
+
+  - it: splits liveness from readiness so a database flap drains instead of restarts
+    set:
+      app.env: staging
+      deployment.sha: testsha
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /api/healthz
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /api/healthz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /api/readyz
+
+  - it: mounts the session on the chart's PVC when persistence is enabled
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.session.persistence.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: session
+            persistentVolumeClaim:
+              claimName: RELEASE-NAME-session
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: session
+            mountPath: /app/.playwright
+
+  - it: honours an externally created claim
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.session.persistence.enabled: true
+      app.session.persistence.existingClaim: seeded-apple-session
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: session
+            persistentVolumeClaim:
+              claimName: seeded-apple-session
+
+  - it: falls back to an ephemeral session when persistence is off
+    set:
+      app.env: development
+      deployment.sha: testsha
+      app.session.persistence.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: session
+            emptyDir: {}
+
+  - it: gives Chromium a memory-backed /dev/shm
+    # Chromium crashes on the container-default 64Mi.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 512Mi
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: dshm
+            mountPath: /dev/shm
+
+  - it: pulls env from the hash-versioned ConfigMap and the operator Secret
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.secrets.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].envFrom
+          count: 2
+
+  - it: omits the secretRef entirely when secrets are disabled
+    # A missing Secret makes the pod hang in CreateContainerConfigError, so the
+    # reference must not be emitted speculatively.
+    set:
+      app.env: development
+      deployment.sha: testsha
+      app.secrets.enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].envFrom
+          count: 1

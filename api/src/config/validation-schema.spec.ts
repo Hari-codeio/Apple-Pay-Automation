@@ -48,7 +48,6 @@ describe('defaults', () => {
     expect(result.data.LOG_LEVEL).toBe('info');
     expect(result.data.DB_PORT).toBe(3306);
     expect(result.data.TRUST_PROXY).toBe('1');
-    expect(result.data.VERIFICATION_TTL_DAYS).toBe(365);
   });
 
   it('coerces numeric env strings to numbers', () => {

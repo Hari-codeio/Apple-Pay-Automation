@@ -1,0 +1,43 @@
+# Preprod overrides for apple-pay-automation.
+#
+# Applied by the deploy workflow when a PR carries the `preprod` label. Same
+# shape as staging: shared non-prod ServiceAccount, preprod worker pool, its own
+# session volume so the two envs never share an Apple session.
+
+app:
+  env: preprod
+
+  serviceAccount: non-prod-service-account
+
+  nodeSelector:
+    role: preprod-workers
+
+  ingress:
+    enabled: true
+    # <service>-preprod.phoenixcrm.io convention (auth-preprod, mcp-preprod).
+    host: applepay-preprod.phoenixcrm.io
+
+  service:
+    enabled: true
+
+  secrets:
+    enabled: true
+    name: 'Engineering - Preprod'
+    itemPath: apple-pay-automation-secrets
+
+  session:
+    persistence:
+      enabled: true
+      size: 1Gi
+
+  config:
+    ENVIRONMENT: preprod
+    DB_HOST: phoenix-preprod-staging-cluster.cluster-c3uiwswiibol.us-west-1.rds.amazonaws.com
+    DB_NAME: phoenix_release
+    DB_USER: admin
+    CORS_ALLOWED_ORIGINS: https://preprod.phoenixcrm.io
+    APPLE_TEAM_ID: 64426BH9K3
+    APPLE_MERCHANT_ID: merchant.phoenix.applepay8
+    # OFF here. Staging already sweeps the same Apple merchant account, and the
+    # portal rate-limits verification per account, not per environment.
+    CRON_ENABLED: 'false'

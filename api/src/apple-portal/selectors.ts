@@ -16,8 +16,8 @@
  * Selectors verified against the live portal (2026-08-01).
  *
  * Preferred over the brief's structural paths because they are anchored on
- * Apple's own semantic classes and attributes. The structural equivalents are
- * kept in MERCHANT_STRUCTURAL_SELECTORS as a second opinion.
+ * Apple's own semantic classes and attributes. Each is paired with a semantic
+ * fallback in MERCHANT_FALLBACK_SELECTORS, tried when this one matches nothing.
  *
  * WHERE THE DOWNLOAD LIVES — the thing that cost the most to establish. The
  * association-file Download exists ONLY on the confirmation screen rendered
@@ -48,21 +48,6 @@ export const MERCHANT_SELECTORS = {
   download: '#form-merchantId .actions-container a[download]',
   /** Tells Apple to fetch the association file from the domain and verify it. */
   verify: '#form-merchantId .actions-container button.action-verify',
-} as const;
-
-/**
- * The structural paths recorded in the project brief. Kept as a fallback: they
- * are precise about position (`span:nth-child(1)`, matching the two spans the
- * confirmation screen really does render) but break the moment Apple inserts a
- * wrapper.
- */
-export const MERCHANT_STRUCTURAL_SELECTORS = {
-  addDomain:
-    '#form-merchantId > div > div:nth-child(3) > div.apple-pay-on-the-web > div.cert-block-container > div:nth-child(3) > button',
-  download:
-    '#form-merchantId > div > div > div > section > div.actions-container > span:nth-child(1) > a',
-  verify:
-    '#form-merchantId > div > div > div > section > div.actions-container > span:nth-child(2) > button',
 } as const;
 
 /**

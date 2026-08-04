@@ -2,3 +2,9 @@
 **/node_modules
 **/coverage
 pnpm-lock.yaml
+
+# Helm templates are Go templates, not YAML. `{{- if ... }}` at the start of a
+# document is a parse error for Prettier's YAML parser, so the whole directory is
+# excluded. chart/values.yaml, chart/Chart.yaml and chart/tests/ are real YAML
+# and stay formatted.
+chart/templates

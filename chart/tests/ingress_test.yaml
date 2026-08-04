@@ -1,0 +1,52 @@
+suite: Ingress template
+templates:
+  - ingress.yaml
+tests:
+  - it: emits nothing when the ingress is disabled
+    set:
+      app.env: development
+      deployment.sha: testsha
+      app.ingress.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: routes the host to the named http service port
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.ingress.enabled: true
+      app.ingress.host: applepay-staging.phoenixcrm.io
+    asserts:
+      - isKind:
+          of: Ingress
+      - equal:
+          path: spec.rules[0].host
+          value: applepay-staging.phoenixcrm.io
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.name
+          value: http
+
+  - it: health-checks an unauthenticated route
+    # Everything under /api/domain-verifications sits behind the x-api-key
+    # guard, so an ALB check pointed there would fail every time with 401.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.ingress.enabled: true
+      app.ingress.host: applepay-staging.phoenixcrm.io
+    asserts:
+      - equal:
+          path: metadata.annotations["alb.ingress.kubernetes.io/healthcheck-path"]
+          value: /api/healthz
+
+  - it: omits the ALB annotations for a non-ALB ingress class
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.ingress.enabled: true
+      app.ingress.host: applepay-staging.phoenixcrm.io
+      app.ingress.ingressClassName: nginx
+    asserts:
+      - isNull:
+          path: metadata.annotations

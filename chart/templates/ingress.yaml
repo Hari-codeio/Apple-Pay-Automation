@@ -1,0 +1,39 @@
+{{- if .Values.app.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "app.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+    {{- include "app.datadogLabels" . | nindent 4 }}
+  {{- if eq .Values.app.ingress.ingressClassName "alb" }}
+  annotations:
+    # AWS Load Balancer Controller annotations. Same shape the other Phoenix
+    # services deploy with.
+    alb.ingress.kubernetes.io/scheme: {{ .Values.app.ingress.scheme }}
+    alb.ingress.kubernetes.io/target-type: {{ .Values.app.ingress.targetType }}
+    # MUST be an unauthenticated route. Everything under
+    # /api/domain-verifications is behind the x-api-key guard, so pointing the
+    # ALB health check at it would fail every check with 401.
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.app.ingress.healthcheckPath }}
+    alb.ingress.kubernetes.io/healthcheck-port: {{ .Values.app.ingress.healthcheckPort | quote }}
+    alb.ingress.kubernetes.io/subnets: {{ .Values.app.ingress.subnets }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.app.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/listen-ports: {{ .Values.app.ingress.listenPorts | squote }}
+    alb.ingress.kubernetes.io/ssl-policy: {{ .Values.app.ingress.sslPolicy }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.app.ingress.ingressClassName }}
+  rules:
+    - host: {{ .Values.app.ingress.host }}
+      http:
+        paths:
+          - path: {{ .Values.app.ingress.path }}
+            pathType: {{ .Values.app.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "app.fullname" . }}
+                port:
+                  name: http
+{{- end }}

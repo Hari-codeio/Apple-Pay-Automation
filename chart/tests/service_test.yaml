@@ -1,0 +1,43 @@
+suite: Service template
+templates:
+  - service.yaml
+tests:
+  - it: emits nothing when the service is disabled
+    set:
+      app.env: development
+      deployment.sha: testsha
+      app.service.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: exposes port 80 onto the named http container port
+    # Named target port, so changing the container port is one edit to
+    # .Values.app.containerPort.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.service.enabled: true
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.type
+          value: ClusterIP
+      - contains:
+          path: spec.ports
+          content:
+            port: 80
+            targetPort: http
+            protocol: TCP
+            name: http
+
+  - it: points the DataDog http_check at the unauthenticated liveness route
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.service.enabled: true
+    asserts:
+      - matchRegex:
+          path: metadata.annotations["ad.datadoghq.com/service.instances"]
+          pattern: /api/healthz

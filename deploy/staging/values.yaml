@@ -1,0 +1,57 @@
+# Staging overrides for apple-pay-automation.
+#
+# Applied by the deploy workflow via:
+#
+#     helm upgrade --install apple-pay-automation ./chart \
+#         --namespace staging \
+#         -f ./deploy/staging/values.yaml \
+#         --set app.image.repository=ghcr.io/phoenixtechnologies-io/apple-pay-automation \
+#         --set app.image.tag=$GIT_SHA \
+#         --set deployment.sha=$GIT_SHA
+#
+# Only values that differ from chart/values.yaml appear here.
+
+app:
+  env: staging
+
+  # Shared non-prod ServiceAccount, reused across every non-prod Phoenix
+  # service.
+  serviceAccount: non-prod-service-account
+
+  nodeSelector:
+    role: staging-workers
+
+  ingress:
+    enabled: true
+    # <service>-staging.phoenixcrm.io convention. The DNS record must point at
+    # the ALB before the host resolves.
+    host: applepay-staging.phoenixcrm.io
+
+  service:
+    enabled: true
+
+  secrets:
+    enabled: true
+    name: 'Engineering - Staging'
+    itemPath: apple-pay-automation-secrets
+
+  # The Apple session must survive restarts here — re-establishing it needs an
+  # interactive 2FA login that cannot be done in a pod.
+  session:
+    persistence:
+      enabled: true
+      size: 1Gi
+
+  # Staging-only additions. Helm deep-merges maps, so the chart's defaults
+  # survive.
+  config:
+    ENVIRONMENT: staging
+    DB_HOST: phoenix-preprod-staging-cluster.cluster-c3uiwswiibol.us-west-1.rds.amazonaws.com
+    DB_NAME: phoenix_release
+    DB_USER: admin
+    CORS_ALLOWED_ORIGINS: https://staging.phoenixcrm.io
+    APPLE_TEAM_ID: 64426BH9K3
+    APPLE_MERCHANT_ID: merchant.phoenix.applepay8
+    # The renewal sweep runs here and nowhere else in non-prod: two sweeps
+    # against one Apple account is the fastest way to get rate-limited.
+    CRON_ENABLED: 'true'

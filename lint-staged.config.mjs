@@ -54,4 +54,13 @@ export default {
   },
   // Non-TypeScript sources get formatted only — ESLint does not own them.
   '**/*.{json,md,yaml,yml,mjs,cjs,js}': ['prettier --write'],
+
+  // Chart changes run helm lint + helm-unittest against EVERY environment's
+  // values, so a schema violation or broken template cannot reach a cluster.
+  // The staged filenames are ignored on purpose — the checks are whole-chart,
+  // not per-file, which is why this is a function returning one command.
+  //
+  // Requires helm + the helm-unittest plugin locally; the script exits with
+  // install instructions if either is missing.
+  '{chart,deploy}/**/*': () => ['bash scripts/helm-precommit.sh'],
 };

@@ -1,0 +1,61 @@
+# Production overrides for apple-pay-automation.
+#
+# NOT WIRED YET: no deploy-production workflow exists. This file is the prepared
+# target for when production goes live. Preconditions:
+#   - 1Password "Engineering - Production" vault item
+#     apple-pay-automation-secrets holding DB_PASSWORD, API_KEY,
+#     APPLE_ID_EMAIL, APPLE_ID_PASSWORD
+#   - DB_HOST / DB_NAME below confirmed against the production cluster, and the
+#     apple_pay_domain_verifications table present in that schema (this service
+#     ships no migrations — the table is owned by the CRM team)
+#   - DNS record for the host below pointing at the ALB
+#   - the session PVC provisioned and seeded by one interactive
+#     `pnpm apple:login` against the production Apple account
+
+app:
+  env: production
+
+  # Shared production ServiceAccount in the default namespace.
+  serviceAccount: production-service-account
+
+  # Default (general-purpose) pool for prod.
+  nodeSelector: {}
+
+  ingress:
+    enabled: true
+    # Confirm the hostname before enabling.
+    host: applepay.phoenixcrm.io
+
+  service:
+    enabled: true
+
+  secrets:
+    enabled: true
+    name: 'Engineering - Production'
+    itemPath: apple-pay-automation-secrets
+
+  session:
+    persistence:
+      enabled: true
+      size: 1Gi
+
+  # Production carries the real merchant traffic, so give the browser more room.
+  resources:
+    requests:
+      cpu: '1'
+      memory: 2Gi
+    limits:
+      cpu: '2'
+      memory: 4Gi
+
+  config:
+    ENVIRONMENT: production
+    # REPLACE: confirm the production cluster endpoint and schema.
+    DB_HOST: REPLACE_ME
+    DB_NAME: phoenix_release
+    DB_USER: admin
+    CORS_ALLOWED_ORIGINS: https://phoenixcrm.io
+    APPLE_TEAM_ID: 64426BH9K3
+    APPLE_MERCHANT_ID: merchant.phoenix.applepay8
+    # The production sweep. Exactly one deployment may have this on.
+    CRON_ENABLED: 'true'

@@ -1,0 +1,54 @@
+suite: Session PersistentVolumeClaim
+templates:
+  - session-pvc.yaml
+tests:
+  - it: emits nothing when persistence is disabled
+    set:
+      app.env: development
+      deployment.sha: testsha
+      app.session.persistence.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: emits nothing when an external claim is supplied
+    # The claim already exists; creating a second one would leave the seeded
+    # session orphaned on the first.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.session.persistence.enabled: true
+      app.session.persistence.existingClaim: seeded-apple-session
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: survives helm uninstall
+    # The Apple session can only be re-created by a human completing 2FA. It is
+    # not reproducible from config, so deleting the release must not delete it.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.session.persistence.enabled: true
+    asserts:
+      - isKind:
+          of: PersistentVolumeClaim
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+      - contains:
+          path: spec.accessModes
+          content: ReadWriteOnce
+      - equal:
+          path: spec.resources.requests.storage
+          value: 1Gi
+
+  - it: omits storageClassName so the cluster default applies
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.session.persistence.enabled: true
+      app.session.persistence.storageClassName: ''
+    asserts:
+      - isNull:
+          path: spec.storageClassName

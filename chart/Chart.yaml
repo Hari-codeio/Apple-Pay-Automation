@@ -1,0 +1,20 @@
+apiVersion: v2
+name: apple-pay-automation
+description: |
+  Apple Pay merchant domain verification automation: a NestJS API that drives
+  the Apple Developer portal with Playwright to register a domain, download the
+  association file Apple generates, store it, confirm it is live at the domain,
+  and record the real `Verification Expires` date Apple publishes.
+
+  Single replica by design — one Apple portal session, in-process
+  de-duplication of concurrent registrations, and a renewal cron that must run
+  on exactly one pod.
+type: application
+
+# Chart version (bump on chart structure / template changes; NOT image
+# version). Follows semver.
+version: 0.1.0
+
+# Application version (informational; the running image's git SHA is injected
+# at deploy time via --set deployment.sha=<sha>).
+appVersion: '0.1.0'

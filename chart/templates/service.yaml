@@ -1,0 +1,36 @@
+{{- if .Values.app.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "app.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+    {{- include "app.datadogLabels" . | nindent 4 }}
+  annotations:
+    # DataDog auto-discovery for the http_check integration. The agent polls the
+    # liveness route on each pod and emits an http_check metric tagged with the
+    # service name; alerts hang off that metric.
+    ad.datadoghq.com/service.init_configs: '[{}]'
+    ad.datadoghq.com/service.check_names: '["http_check"]'
+    ad.datadoghq.com/service.instances: |
+      [
+        {
+          "name": "{{ include "app.fullname" . }}",
+          "url": "http://%%host%%:{{ .Values.app.service.port }}{{ .Values.app.probes.livenessHttpPath }}",
+          "timeout": 3
+        }
+      ]
+spec:
+  type: {{ .Values.app.service.type }}
+  ports:
+    - port: {{ .Values.app.service.port }}
+      # Named port `http` maps to the container's containerPort, so changing the
+      # port is a one-line edit to .Values.app.containerPort.
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ include "app.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

@@ -1,0 +1,77 @@
+suite: ConfigMap template
+templates:
+  - configmap.yaml
+tests:
+  - it: hash-versions its name so a value change rolls the pod
+    set:
+      app.env: staging
+      deployment.sha: testsha
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - matchRegex:
+          path: metadata.name
+          pattern: ^RELEASE-NAME-[0-9a-f]{5}$
+
+  - it: changes the hash when a config value changes
+    set:
+      app.env: staging
+      deployment.sha: testsha
+      app.config.LOG_LEVEL: debug
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: ^RELEASE-NAME-[0-9a-f]{5}$
+
+  - it: carries the runtime config the app cannot boot without
+    set:
+      app.env: staging
+      deployment.sha: testsha
+    asserts:
+      - equal:
+          path: data.PORT
+          value: '3000'
+      - equal:
+          path: data.NODE_ENV
+          value: production
+
+  - it: keeps Swagger off and trusts the proxy for client IPs
+    # SWAGGER_ENABLED=true is refused outright by the boot schema in production;
+    # TRUST_PROXY is what makes per-client rate limiting work behind the ALB.
+    set:
+      app.env: production
+      deployment.sha: testsha
+    asserts:
+      - equal:
+          path: data.SWAGGER_ENABLED
+          value: 'false'
+      - equal:
+          path: data.TRUST_PROXY
+          value: '1'
+
+  - it: does not serve the well-known route
+    # The CRM backend owns it in this deployment; two services answering it is a
+    # split brain.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+    asserts:
+      - equal:
+          path: data.WELL_KNOWN_SERVE_ENABLED
+          value: 'false'
+
+  - it: never carries a secret
+    # DB_PASSWORD, API_KEY and the Apple credentials come from the 1Password
+    # operator Secret, never from a ConfigMap.
+    set:
+      app.env: staging
+      deployment.sha: testsha
+    asserts:
+      - isNull:
+          path: data.DB_PASSWORD
+      - isNull:
+          path: data.API_KEY
+      - isNull:
+          path: data.APPLE_ID_PASSWORD
+      - isNull:
+          path: data.APPLE_ID_EMAIL

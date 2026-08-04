@@ -1,0 +1,27 @@
+{{- if and .Values.app.session.persistence.enabled (not .Values.app.session.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "app.sessionClaimName" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: session
+    {{- include "app.datadogLabels" . | nindent 4 }}
+  annotations:
+    # Survive `helm uninstall`. This volume holds the Apple portal session,
+    # which can only be re-created by a human completing 2FA in a browser — it
+    # is not reproducible from config, so deleting the release must not delete
+    # it.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.app.session.persistence.storageClassName }}
+  storageClassName: {{ .Values.app.session.persistence.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      # Kilobytes of JSON in practice. The floor is the storage class's minimum,
+      # not our need.
+      storage: {{ .Values.app.session.persistence.size }}
+{{- end }}

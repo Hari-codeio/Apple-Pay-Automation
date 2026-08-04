@@ -1,0 +1,56 @@
+# Local run of the API in the same image the cluster runs.
+#
+#     docker compose up api          # API on http://localhost:3000
+#
+# The build context is the REPO ROOT, not api/: the Dockerfile is a pnpm
+# workspace build and copies pnpm-workspace.yaml, the lockfile, and packages/
+# before api/. Building from api/ cannot see them.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    ports:
+      - '3000:3000'
+    # Everything, including the credentials. Compose overrides below replace the
+    # values that only make sense on a developer laptop.
+    env_file: api/.env
+    environment:
+      PORT: 3000
+      # No display in the container.
+      PLAYWRIGHT_HEADLESS: 'true'
+      # Blank reads as unset (the schema maps blank to undefined), which selects
+      # the throwaway browser seeded from APPLE_SESSION_STATE_PATH instead of a
+      # persistent on-disk Chrome profile from the host.
+      BROWSER_USER_DATA_DIR: ''
+      # The image ships Chromium, not branded Chrome.
+      BROWSER_CHANNEL: chromium
+      # Nothing starts a debug Chrome in here.
+      BROWSER_CDP_AUTOSTART: 'false'
+      # The renewal sweep must not fire from a laptop against the shared Apple
+      # account.
+      CRON_ENABLED: 'false'
+    volumes:
+      # The Apple portal session. Named volume so it survives `down` — losing it
+      # means another interactive `pnpm apple:login`.
+      - apple-session:/app/.playwright
+      # Traces and downloaded association files, readable from the host after a
+      # failed run.
+      - ./api/.artifacts:/app/.artifacts
+    # Chromium crashes on the 64Mi default.
+    shm_size: 512mb
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  apple-session:

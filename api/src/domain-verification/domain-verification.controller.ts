@@ -43,8 +43,10 @@ export class DomainVerificationController {
     summary: 'Register a domain, store its association file, and verify it',
     description:
       'Runs the full flow: Apple portal registration → association file download → ' +
-      'database write → liveness probe → Apple verification. Safe to retry: an ' +
-      'already-registered domain skips the Add Domain step and re-downloads the file.',
+      'database write → liveness probe → Apple verification. NOT retryable for a ' +
+      'domain Apple already lists — it is rejected, because Apple offers the ' +
+      'association file only on the confirmation screen shown right after an add. ' +
+      'Use POST /:domain/reverify for that case.',
   })
   register(@Body() dto: RegisterDomainDto): Promise<RegistrationResult> {
     return this.service.register({

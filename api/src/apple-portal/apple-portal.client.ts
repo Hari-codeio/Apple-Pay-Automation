@@ -182,7 +182,7 @@ export class ApplePortalClient {
       structural: MERCHANT_SELECTORS.domainInput,
       fallback: MERCHANT_FALLBACK_SELECTORS.domainInput,
     });
-    await input.fill(domain);
+    await this.enterDomain(input, domain);
 
     await this.click(page, 'save-domain', MERCHANT_SELECTORS.save, {
       fallback: MERCHANT_FALLBACK_SELECTORS.save,
@@ -516,6 +516,47 @@ export class ApplePortalClient {
     if (SIGN_IN_URL_MARKERS.some((marker) => url.includes(marker))) {
       throw new AppleSessionExpiredError(url);
     }
+  }
+
+  /**
+   * Put the domain in the form field.
+   *
+   * `fill()` by default: one operation, one `input` event, value set atomically.
+   * That is the right thing for an unattended run and it is what every production
+   * path does.
+   *
+   * Above 0, PLAYWRIGHT_TYPING_DELAY_MS types it key by key instead. This exists
+   * only so a demo can show data being entered — PLAYWRIGHT_SLOW_MO_MS paces whole
+   * operations, and `fill()` is a single operation, so no value of it will ever
+   * look like typing.
+   *
+   * The two are not equivalent at the DOM level: typing fires a full
+   * keydown/keypress/input/keyup sequence per character where `fill()` fires one
+   * `input`. If Apple ever adds live validation or an autocomplete to this field,
+   * the demo path is the one that would behave differently — which is why the
+   * default is 0 and production never takes this branch.
+   */
+  private async enterDomain(input: Locator, domain: string): Promise<void> {
+    const typingDelayMs = this.config.getOrThrow<number>(
+      'PLAYWRIGHT_TYPING_DELAY_MS',
+    );
+
+    if (typingDelayMs === 0) {
+      await input.fill(domain);
+      return;
+    }
+
+    // Clear first so this stays an entry rather than an append — pressSequentially
+    // types at the caret and does not replace existing content.
+    await input.fill('');
+    await input.pressSequentially(domain, {
+      delay: typingDelayMs,
+      // The per-character delay must never be the thing that trips the action
+      // timeout: a 40-character host at 500ms is 20s of legitimate typing.
+      timeout:
+        this.config.getOrThrow<number>('PLAYWRIGHT_ACTION_TIMEOUT_MS') +
+        domain.length * typingDelayMs,
+    });
   }
 
   /**

@@ -130,6 +130,18 @@ export class BrowserFactory {
         ? await context.newPage()
         : (context.pages()[0] ?? (await context.newPage()));
 
+    // A non-zero slowMo means a human is watching this run, so put the tab where
+    // they can see it. `newPage()` creates a BACKGROUND tab and does not raise the
+    // window — so a paced run against a minimised or covered Chrome is completely
+    // invisible, which is exactly what happened the first time this was demoed.
+    //
+    // Gated on slowMo rather than a new knob: at the default of 0 nothing is taken
+    // from the operator's foreground, which is what an unattended run needs.
+    // Best-effort — a failure to focus is never a reason to fail the run.
+    if (this.config.getOrThrow<number>('PLAYWRIGHT_SLOW_MO_MS') > 0) {
+      await page.bringToFront().catch(() => undefined);
+    }
+
     // `ownsPage` is true exactly when mode is 'cdp' (we open our own tab there),
     // so it needs no further widening — TypeScript correlates the two and rejects
     // a redundant `|| mode === 'cdp'` as unreachable.
@@ -164,7 +176,18 @@ export class BrowserFactory {
     const target = await this.resolveCdpTarget(userDataDir);
     if (target === undefined) return undefined;
 
-    const browser = await chromium.connectOverCDP(target);
+    // slowMo has to be passed here too, not only in launchOptions(). It used to be
+    // set exclusively there, which meant the two LAUNCH tiers honoured
+    // PLAYWRIGHT_SLOW_MO_MS and this — the preferred tier — silently ignored it:
+    // the repo advertised a knob its own default path threw away.
+    //
+    // Inert at the schema default of 0. Playwright's dispatcher guards the pause
+    // with `if (slowMo)`, so zero costs not even a microtask, and the delay runs
+    // after the action completes rather than inside its progress controller, so a
+    // large value can never trip an action timeout.
+    const browser = await chromium.connectOverCDP(target, {
+      slowMo: this.config.getOrThrow<number>('PLAYWRIGHT_SLOW_MO_MS'),
+    });
     // Reuse the EXISTING context. `browser.newContext()` over CDP creates an
     // incognito-like context that does not share the profile's cookies, which
     // would throw away the Apple session that is the entire point of attaching.

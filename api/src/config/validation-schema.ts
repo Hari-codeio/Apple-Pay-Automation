@@ -253,6 +253,21 @@ export const configValidationSchema = z
     CHROME_EXECUTABLE_PATH: blankAsUndefined(z.string().min(1).optional()),
     PLAYWRIGHT_HEADLESS: optionalBoolean,
     PLAYWRIGHT_SLOW_MO_MS: z.coerce.number().int().min(0).max(5_000).default(0),
+    // Per-character delay for the ONE value entry in this flow, the domain field.
+    //
+    // 0 — the default — keeps `fill()`, which sets the value atomically in a
+    // single operation. Above 0 the domain is typed key by key, which is the only
+    // way a human-speed demo can show data being entered: PLAYWRIGHT_SLOW_MO_MS
+    // delays whole operations, and `fill()` is one operation, so no amount of it
+    // ever looks like typing.
+    //
+    // Capped because this multiplies by the length of the domain.
+    PLAYWRIGHT_TYPING_DELAY_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(500)
+      .default(0),
     PLAYWRIGHT_NAV_TIMEOUT_MS: z.coerce
       .number()
       .int()

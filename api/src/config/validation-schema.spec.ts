@@ -65,6 +65,36 @@ describe('defaults', () => {
     expect(result.data.LOG_PRETTY).toBe(true);
     expect(result.data.DB_SSL).toBe(false);
   });
+
+  describe('PLAYWRIGHT_TYPING_DELAY_MS', () => {
+    it('defaults to 0, which keeps the atomic fill()', () => {
+      // The default has to be 0: above 0 the domain is typed key by key, which is
+      // a different interaction with Apple's form than fill().
+      const result = parse(baseEnv);
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data.PLAYWRIGHT_TYPING_DELAY_MS).toBe(0);
+    });
+
+    it('coerces the env string to a number', () => {
+      const result = parse({ ...baseEnv, PLAYWRIGHT_TYPING_DELAY_MS: '100' });
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data.PLAYWRIGHT_TYPING_DELAY_MS).toBe(100);
+    });
+
+    it('refuses a delay past the cap', () => {
+      // The cap exists because this multiplies by the length of the domain: a
+      // 40-character host at 500ms is already 20s of typing.
+      const result = parse({ ...baseEnv, PLAYWRIGHT_TYPING_DELAY_MS: '501' });
+      expect(result.success).toBe(false);
+    });
+
+    it('refuses a negative delay', () => {
+      const result = parse({ ...baseEnv, PLAYWRIGHT_TYPING_DELAY_MS: '-1' });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('blank optional values', () => {
